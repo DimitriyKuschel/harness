@@ -12,59 +12,24 @@ import {
   type ToolPart,
   messageText,
 } from '../../core/types';
-import { AGENT_META, cx, formatDuration, formatTokens, isFileTool, toolIcon } from '../util';
+import { t } from '../../i18n';
+import { AGENT_SHORT, cx, formatDuration, formatTokens, isFileTool, toolIcon } from '../util';
 import { post } from '../vscode';
 import { Markdown } from './Markdown';
 
-const KIND_LABELS: Partial<Record<MessageKind, string>> = {
-  brainstorm: 'Брейншторм',
-  debate: 'Раунд обсуждения',
-  synthesis: 'Сводка модератора',
-  review: 'Ревью',
-  fix: 'Исправления по ревью',
-  plan: 'План команды',
-  task: 'Задача',
-  report: 'Проверка лида',
+const TEAM_STATUS_ICONS: Record<TeamStatus['status'], string> = {
+  done: 'pass-filled',
+  continue: 'sync',
+  blocked: 'question',
 };
 
-const TEAM_STATUS: Record<TeamStatus['status'], { icon: string; label: string }> = {
-  done: { icon: 'pass-filled', label: 'Цель достигнута' },
-  continue: { icon: 'sync', label: 'Нужна ещё итерация' },
-  blocked: { icon: 'question', label: 'Нужно решение CEO' },
-};
-
-const TASK_STATUS: Record<TaskStatus, { icon: string; label: string }> = {
-  pending: { icon: 'circle-large-outline', label: 'ждёт очереди' },
-  running: { icon: 'loading codicon-modifier-spin', label: 'в работе' },
-  done: { icon: 'pass-filled', label: 'готово' },
-  error: { icon: 'error', label: 'ошибка' },
-  stopped: { icon: 'debug-stop', label: 'остановлена' },
-  skipped: { icon: 'circle-slash', label: 'пропущена: не выполнена зависимость' },
-};
-
-const TIER_LABELS: Record<RouteInfo['tier'], string> = {
-  trivial: 'простая',
-  standard: 'обычная',
-  hard: 'сложная',
-  critical: 'критичная',
-};
-
-const DOMAIN_LABELS: Record<NonNullable<RouteInfo['domain']>, string> = {
-  code: 'код',
-  frontend: 'фронтенд',
-  design: 'дизайн',
-  research: 'исследование',
-  writing: 'тексты',
-  marketing: 'маркетинг',
-  planning: 'планирование',
-  data: 'данные',
-  other: 'общее',
-};
-
-const AUTONOMY_LABELS: Record<RouteInfo['autonomy'], string> = {
-  readonly: 'только чтение',
-  auto: 'правки',
-  full: 'полный доступ',
+const TASK_STATUS_ICONS: Record<TaskStatus, string> = {
+  pending: 'circle-large-outline',
+  running: 'loading codicon-modifier-spin',
+  done: 'pass-filled',
+  error: 'error',
+  stopped: 'debug-stop',
+  skipped: 'circle-slash',
 };
 
 interface Props {
@@ -104,24 +69,25 @@ function AgentMessage({ message: m, busy, canReview }: Props) {
   const isPlan = m.kind === 'plan' || m.kind === 'report';
   const text = isPlan ? stripPlanBlock(raw) : raw;
   const parts = isPlan ? m.parts.map((p) => (p.type === 'text' ? { ...p, text: stripPlanBlock(p.text) } : p)) : m.parts;
-  const kindLabel = m.kind ? KIND_LABELS[m.kind] : undefined;
+  const s = t().message;
+  const kindLabel = m.kind ? s.kinds[m.kind] : undefined;
   const collapsible = !live && (m.kind === 'brainstorm' || m.kind === 'debate') && text.length > 1400;
   const [expanded, setExpanded] = useState(false);
 
   return (
     <div className={cx('msg', 'agent', agent && `agent-${agent}`, m.kind === 'synthesis' && 'synthesis', m.status === 'error' && 'failed')}>
       <div className={cx('avatar', live && 'pulse')}>
-        {agent ? AGENT_META[agent].short : <i className="codicon codicon-loading codicon-modifier-spin" />}
+        {agent ? AGENT_SHORT[agent] : <i className="codicon codicon-loading codicon-modifier-spin" />}
       </div>
       <div className="msg-body">
         <div className="msg-head">
-          <span className="msg-name">{agent ? AGENT_LABELS[agent] : 'Роутер'}</span>
+          <span className="msg-name">{agent ? AGENT_LABELS[agent] : s.router}</span>
           {kindLabel && <span className="kind-badge">{kindLabel}</span>}
           {m.route && <RouteChip route={m.route} />}
         </div>
         {m.subtitle && <div className="msg-subtitle">{m.subtitle}</div>}
 
-        {m.status === 'routing' && <div className="thinking">Подбираю исполнителя, модель и effort…</div>}
+        {m.status === 'routing' && <div className="thinking">{s.routing}</div>}
         {m.route && (m.route.via === 'llm' || m.route.via === 'heuristic') && <RouteReason route={m.route} />}
 
         <div className={cx('msg-content', collapsible && !expanded && 'collapsed')}>
@@ -129,27 +95,27 @@ function AgentMessage({ message: m, busy, canReview }: Props) {
         </div>
         {isPlan && live && raw.includes('```team-') && (
           <div className="thinking">
-            {raw.includes('```team-plan') ? 'Распределяю задачи' : 'Подвожу итог'}
+            {raw.includes('```team-plan') ? s.assigning : s.summing}
             <span className="dots" />
           </div>
         )}
         {m.teamStatus && (
           <div className={cx('team-status', m.teamStatus.status)}>
-            <i className={`codicon codicon-${TEAM_STATUS[m.teamStatus.status].icon}`} />
-            <b>{TEAM_STATUS[m.teamStatus.status].label}</b>
+            <i className={`codicon codicon-${TEAM_STATUS_ICONS[m.teamStatus.status]}`} />
+            <b>{s.teamStatus[m.teamStatus.status]}</b>
             {m.teamStatus.reason && <span>— {m.teamStatus.reason}</span>}
           </div>
         )}
-        {m.plan && <PlanCard tasks={m.plan} title={m.kind === 'report' ? `Следующая итерация (${(m.iteration ?? 1) + 1})` : undefined} />}
+        {m.plan && <PlanCard tasks={m.plan} title={m.kind === 'report' ? s.nextIteration((m.iteration ?? 1) + 1) : undefined} />}
         {collapsible && (
           <button className="link-button" onClick={() => setExpanded((v) => !v)}>
-            {expanded ? 'Свернуть' : 'Показать полностью'}
+            {expanded ? s.collapse : s.expand}
           </button>
         )}
 
         {m.status === 'streaming' && !text && !m.parts.some((p) => p.type === 'tool' && p.status === 'running') && (
           <div className="thinking">
-            Думает<span className="dots" />
+            {s.thinking}<span className="dots" />
           </div>
         )}
         {live && <Elapsed since={m.createdAt} />}
@@ -157,10 +123,10 @@ function AgentMessage({ message: m, busy, canReview }: Props) {
         {m.status === 'error' && (
           <div className="error-box">
             <i className="codicon codicon-error" />
-            <span>{m.error || 'Ошибка'}</span>
+            <span>{m.error || s.error}</span>
           </div>
         )}
-        {m.status === 'stopped' && <div className="stopped">Остановлено</div>}
+        {m.status === 'stopped' && <div className="stopped">{s.stopped}</div>}
 
         {!live && <Footer m={m} busy={busy} canReview={canReview} text={text} />}
       </div>
@@ -169,13 +135,14 @@ function AgentMessage({ message: m, busy, canReview }: Props) {
 }
 
 function RouteChip({ route }: { route: RouteInfo }) {
-  const model = route.resolvedModel ?? route.model ?? 'по умолчанию';
+  const s = t().message;
+  const model = route.resolvedModel ?? route.model ?? s.route.defaultModel;
   const title = [
-    `Модель: ${model}`,
-    `Effort: ${route.effort}`,
-    `Сложность: ${TIER_LABELS[route.tier]}${route.domain ? ` · область: ${DOMAIN_LABELS[route.domain]}` : ''}`,
-    `Доступ: ${AUTONOMY_LABELS[route.autonomy]}`,
-    `Причина: ${route.reason}`,
+    `${s.route.model}: ${model}`,
+    `${s.route.effort}: ${route.effort}`,
+    `${s.route.tier}: ${s.tiers[route.tier]}${route.domain ? ` · ${s.route.domain}: ${s.domains[route.domain]}` : ''}`,
+    `${s.route.access}: ${s.autonomy[route.autonomy]}`,
+    `${s.route.reason}: ${route.reason}`,
   ].join('\n');
   return (
     <span className="route-chip" title={title}>
@@ -186,10 +153,12 @@ function RouteChip({ route }: { route: RouteInfo }) {
 }
 
 function RouteReason({ route }: { route: RouteInfo }) {
+  const s = t().message;
   return (
     <div className="route-reason">
       <i className={cx('codicon', route.via === 'llm' ? 'codicon-sparkle' : 'codicon-symbol-ruler')} />
-      {TIER_LABELS[route.tier]} задача{route.domain && route.domain !== 'other' ? ` · ${DOMAIN_LABELS[route.domain]}` : ''} — {route.reason}
+      {s.tierTask(s.tiers[route.tier])}
+      {route.domain && route.domain !== 'other' ? ` · ${s.domains[route.domain]}` : ''} — {route.reason}
     </div>
   );
 }
@@ -220,6 +189,7 @@ function ToolGroup({ tools, live }: { tools: ToolPart[]; live: boolean }) {
   const running = tools.filter((t) => t.status === 'running');
   const failed = tools.filter((t) => t.status === 'error').length;
   const current = running[running.length - 1] ?? (live ? tools[tools.length - 1] : undefined);
+  const s = t().message;
 
   return (
     <div className={cx('tool-group', open && 'open')}>
@@ -233,8 +203,8 @@ function ToolGroup({ tools, live }: { tools: ToolPart[]; live: boolean }) {
           </>
         ) : (
           <span>
-            {tools.length} {plural(tools.length, 'действие', 'действия', 'действий')}
-            {failed > 0 && <span className="tool-failed"> · {failed} с ошибкой</span>}
+            {s.tools(tools.length)}
+            {failed > 0 && <span className="tool-failed"> · {s.toolsFailed(failed)}</span>}
           </span>
         )}
       </button>
@@ -267,30 +237,31 @@ function ToolGroup({ tools, live }: { tools: ToolPart[]; live: boolean }) {
   );
 }
 
-function PlanCard({ tasks, title = 'Задачи команды' }: { tasks: PlanTask[]; title?: string }) {
-  const done = tasks.filter((t) => t.status === 'done').length;
+function PlanCard({ tasks, title }: { tasks: PlanTask[]; title?: string }) {
+  const s = t().message;
+  const done = tasks.filter((task) => task.status === 'done').length;
   return (
     <div className="plan-card">
       <div className="plan-head">
         <i className="codicon codicon-checklist" />
-        {title} · {done}/{tasks.length}
+        {title ?? s.teamTasks} · {done}/{tasks.length}
       </div>
       <ul className="plan-tasks">
         {tasks.map((t, i) => {
-          const st = TASK_STATUS[t.status];
+          const status = s.taskStatus[t.status];
           const deps = t.dependsOn.map((d) => tasks.findIndex((x) => x.id === d) + 1).filter((n) => n > 0);
-          const meta = [t.scope, deps.length ? `после ${deps.join(', ')}` : ''].filter(Boolean).join(' · ');
+          const meta = [t.scope, deps.length ? s.after(deps.join(', ')) : ''].filter(Boolean).join(' · ');
           return (
             <li key={t.id} className={cx('plan-task', t.status, `agent-${t.agent}`)}>
-              <i className={`codicon codicon-${st.icon} task-status`} title={st.label} />
+              <i className={`codicon codicon-${TASK_STATUS_ICONS[t.status]} task-status`} title={status} />
               <span className="avatar small" title={AGENT_LABELS[t.agent]}>
-                {AGENT_META[t.agent].short}
+                {AGENT_SHORT[t.agent]}
               </span>
               <div className="task-text">
                 <button
                   className="task-title"
                   disabled={!t.messageId}
-                  title={t.messageId ? 'Перейти к выполнению' : st.label}
+                  title={t.messageId ? s.goToTask : status}
                   onClick={() => document.getElementById(`msg-${t.messageId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
                 >
                   {i + 1}. {t.title}
@@ -307,37 +278,39 @@ function PlanCard({ tasks, title = 'Задачи команды' }: { tasks: Pla
 
 function Footer({ m, busy, canReview, text }: { m: ChatMessage; busy: boolean; canReview: boolean; text: string }) {
   const actions: { icon: string; label: string; title: string; run: () => void; primary?: boolean }[] = [];
+  const s = t().message;
+  const a = s.actions;
   // Plans, reviews and summaries are about other work; plan tasks and the report keep their own brief.
   const work = m.kind !== 'synthesis' && m.kind !== 'review' && m.kind !== 'plan';
   const redoable = work && m.kind !== 'task' && m.kind !== 'report';
 
   if (m.status === 'error' || m.status === 'stopped') {
-    actions.push({ icon: 'refresh', label: 'Повторить', title: 'Запустить ещё раз тем же агентом', run: () => post({ type: 'rerun', id: m.id, stronger: false }), primary: true });
+    actions.push({ icon: 'refresh', ...a.retry, run: () => post({ type: 'rerun', id: m.id, stronger: false }), primary: true });
   }
   if (m.status === 'done') {
     if (m.kind === 'review') {
-      actions.push({ icon: 'tools', label: 'Исправить', title: 'Передать замечания автору', run: () => post({ type: 'fix', id: m.id }), primary: true });
+      actions.push({ icon: 'tools', ...a.fix, run: () => post({ type: 'fix', id: m.id }), primary: true });
     }
     if (m.kind === 'report' && m.goal && m.teamStatus?.status !== 'done') {
       const id = m.id;
       const ready = m.plan?.length && m.plan.every((t) => t.status === 'pending');
       actions.push({
         icon: 'debug-continue',
-        label: 'Ещё итерация',
-        title: ready ? 'Запустить следующую итерацию по плану лида' : 'Лид составит план следующей итерации, команда его выполнит',
+        label: a.continue.label,
+        title: ready ? a.continueReady : a.continue.title,
         run: () => post({ type: 'continueTeam', id }),
         primary: m.teamStatus?.status === 'continue',
       });
     }
     if (m.kind === 'synthesis' && m.round) {
       const round = m.round;
-      actions.push({ icon: 'comment-discussion', label: 'Ещё раунд', title: 'Каждый участник критикует ответы коллег, затем новая сводка', run: () => post({ type: 'debate', round }) });
+      actions.push({ icon: 'comment-discussion', ...a.debate, run: () => post({ type: 'debate', round }) });
     }
     if (work && canReview) {
-      actions.push({ icon: 'eye', label: 'Ревью', title: 'Проверка агентом другого вендора', run: () => post({ type: 'review', id: m.id }) });
+      actions.push({ icon: 'eye', ...a.review, run: () => post({ type: 'review', id: m.id }) });
     }
     if (redoable && m.route && m.route.tier !== 'critical') {
-      actions.push({ icon: 'arrow-up', label: 'Сильнее', title: 'Переделать этим же агентом на уровень сложнее (сильнее модель / больше effort)', run: () => post({ type: 'rerun', id: m.id, stronger: true }) });
+      actions.push({ icon: 'arrow-up', ...a.stronger, run: () => post({ type: 'rerun', id: m.id, stronger: true }) });
     }
   }
 
@@ -354,7 +327,7 @@ function Footer({ m, busy, canReview, text }: { m: ChatMessage; busy: boolean; c
       </div>
       <div className="msg-stats">
         {m.usage && (
-          <span title="Токены: вход (вместе с кэшем) / выход">
+          <span title={s.tokens}>
             {formatTokens(m.usage.input)} → {formatTokens(m.usage.output)}
           </span>
         )}
@@ -369,7 +342,7 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       className="action"
-      title="Копировать ответ"
+      title={t().message.copyAnswer}
       onClick={() => {
         post({ type: 'copy', text });
         setDone(true);
@@ -394,21 +367,13 @@ function shortModel(model: string): string {
   return model.replace(/^claude-/, '');
 }
 
-function plural(n: number, one: string, few: string, many: string): string {
-  const m10 = n % 10;
-  const m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return one;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
-  return many;
-}
-
 export function RoundHeader({ kind, agents }: { kind: MessageKind; agents: string[] }) {
   return (
     <div className="round-header">
       <span className="round-line" />
       <span className="round-label">
         <i className={cx('codicon', kind === 'debate' ? 'codicon-comment-discussion' : 'codicon-lightbulb')} />
-        {kind === 'debate' ? 'Раунд обсуждения' : 'Брейншторм'} · {agents.join(', ')}
+        {t().message.kinds[kind === 'debate' ? 'debate' : 'brainstorm']} · {agents.join(', ')}
       </span>
       <span className="round-line" />
     </div>

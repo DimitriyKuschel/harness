@@ -5,7 +5,8 @@ import { fakeCli, fakeReplyCli } from './helpers';
 import { ClaudeAdapter, parseClaudeLimits, parseClaudeUsage } from '../core/agents/claude';
 import { CodexAdapter, parseCodexRateLimits } from '../core/agents/codex';
 import { GeminiAdapter } from '../core/agents/gemini';
-import { discussionTier, handoffMentions, parseMentions } from '../core/orchestrator';
+import { resolveLocale, setLocale } from '../i18n';
+import { discussionTier, handoffMentions, parseMentions, teamBrief } from '../core/orchestrator';
 import { parsePlan, parseStatus, stripPlanBlock } from '../core/plan';
 import { Router, effectiveUsage, heuristicAssessment, isSmallTalk, shiftTier, type RouteContext, type RouterConfig } from '../core/router';
 import type { AgentEvent, AgentId, AgentLimits } from '../core/types';
@@ -49,6 +50,44 @@ test('heuristics: tier, domain, change intent', () => {
   assert.ok(!heuristicAssessment('добавь роли пользователей в админку').team);
 });
 
+test('heuristics: english', () => {
+  assert.equal(heuristicAssessment('what is this project?').tier, 'trivial');
+  assert.ok(isSmallTalk('thanks!'));
+  assert.ok(!isSmallTalk('ok, add tests'));
+  assert.equal(heuristicAssessment('Design the architecture of the payment module and the data migration').tier, 'hard');
+  assert.equal(heuristicAssessment('this is a critical question: can you keep working on your part?').tier, 'critical');
+  assert.equal(heuristicAssessment('this is not critical, take a look when you have time').tier, 'trivial');
+  const ui = heuristicAssessment('add a login button to the home page');
+  assert.deepEqual([ui.tier, ui.domain, ui.needsChanges], ['standard', 'frontend', true]);
+  assert.equal(heuristicAssessment('Suggest an SEO strategy and an advertising campaign for the launch').domain, 'marketing');
+  assert.ok(heuristicAssessment('go ahead, split the work among yourselves').team);
+  assert.ok(!heuristicAssessment('add user roles to the admin panel').team);
+});
+
+test('i18n: the locale follows the setting or VS Code; prompts, strengths and labels switch with it', () => {
+  assert.equal(resolveLocale('auto', 'ru'), 'ru');
+  assert.equal(resolveLocale('auto', 'en-US'), 'en');
+  assert.equal(resolveLocale('auto', 'de'), 'en');
+  assert.equal(resolveLocale('ru', 'en'), 'ru');
+  assert.equal(resolveLocale(undefined, 'en'), 'en');
+
+  assert.match(teamBrief('codex', '/p'), /^You are Codex, a member/);
+  assert.match(router.roster(ctx()), /- Claude \(agent: "claude"\): architecture and complex .* Subscription limit used: 0%\./);
+  const custom = new Router(() => ({ ...config, strengths: { codex: 'only tests' } }), {} as never, () => tmpdir());
+  assert.match(custom.roster(ctx()), /"codex"\): only tests /);
+  assert.match(custom.roster(ctx()), /"claude"\): architecture and complex/);
+
+  setLocale('ru');
+  try {
+    assert.match(teamBrief('codex', '/p'), /^Ты — Codex, участник/);
+    assert.match(router.roster(ctx()), /архитектура и сложные .* Лимит подписки израсходован на 0%\./);
+    assert.equal(heuristicAssessment('').reason, 'эвристика по тексту');
+  } finally {
+    setLocale('en');
+  }
+  assert.equal(heuristicAssessment('').reason, 'text heuristics');
+});
+
 test('team plan: parsed, sanitised, hidden from the chat', () => {
   const text = [
     'Подход: бэкенд — Codex.',
@@ -70,7 +109,7 @@ test('team plan: parsed, sanitised, hidden from the chat', () => {
       ['b', 'gemini', 'standard', []],
     ],
   );
-  assert.equal(tasks[1].title, 'Задача 2');
+  assert.equal(tasks[1].title, 'Task 2');
   assert.equal(stripPlanBlock(text), 'Подход: бэкенд — Codex.');
   assert.equal(stripPlanBlock('План:\n```team-plan\n{"tasks": ['), 'План:');
   assert.equal(parsePlan('```team-plan\n{oops\n```', () => 'claude'), undefined);

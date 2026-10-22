@@ -1,9 +1,13 @@
 {
   "name": "harness",
   "displayName": "Harness — AI Team",
-  "description": "Командный чат с Claude Code, Codex и Antigravity на ваших подписках: роутинг задач по моделям и effort, брейншторм, кросс-ревью.",
+  "description": "%description%",
   "version": "0.1.0",
   "publisher": "korsar",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DimitriyKuschel/harness.git"
+  },
   "private": true,
   "license": "UNLICENSED",
   "engines": {
@@ -18,7 +22,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Агенты запускают команды и правят файлы в проекте, поэтому в ограниченном режиме чат открывается только для чтения истории.",
+      "description": "%untrusted.description%",
       "restrictedConfigurations": [
         "harness.agents.claude.path",
         "harness.agents.codex.path",
@@ -48,25 +52,25 @@
     "commands": [
       {
         "command": "harness.newChat",
-        "title": "Новый чат",
+        "title": "%command.newChat%",
         "category": "Harness",
         "icon": "$(add)"
       },
       {
         "command": "harness.openInEditor",
-        "title": "Открыть чат во вкладке редактора",
+        "title": "%command.openInEditor%",
         "category": "Harness",
         "icon": "$(link-external)"
       },
       {
         "command": "harness.refreshAgents",
-        "title": "Проверить агентов",
+        "title": "%command.refreshAgents%",
         "category": "Harness",
         "icon": "$(refresh)"
       },
       {
         "command": "harness.showLog",
-        "title": "Показать лог",
+        "title": "%command.showLog%",
         "category": "Harness",
         "icon": "$(output)"
       }
@@ -98,54 +102,69 @@
     "configuration": {
       "title": "Harness",
       "properties": {
+        "harness.language": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "en",
+            "ru"
+          ],
+          "enumDescriptions": [
+            "%config.language.auto%",
+            "%config.language.en%",
+            "%config.language.ru%"
+          ],
+          "default": "auto",
+          "markdownDescription": "%config.language%"
+        },
         "harness.agents.claude.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Использовать Claude Code."
+          "description": "%config.agents.claude.enabled%"
         },
         "harness.agents.claude.path": {
           "type": "string",
           "default": "claude",
-          "description": "Путь к бинарю claude (если его нет в PATH редактора)."
+          "description": "%config.agents.claude.path%"
         },
         "harness.agents.claude.chrome": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Подключать Claude к Chrome через расширение Claude in Chrome (`--chrome`). Claude работает в вашем браузере со всеми входами в аккаунты. В режиме «Только чтение» он может только открывать и читать страницы, в «Правках» кликает и вводит текст после авто-проверки, в «Полном доступе» — без подтверждений."
+          "markdownDescription": "%config.agents.claude.chrome%"
         },
         "harness.agents.codex.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Использовать Codex CLI."
+          "description": "%config.agents.codex.enabled%"
         },
         "harness.agents.codex.path": {
           "type": "string",
           "default": "codex",
-          "description": "Путь к бинарю codex."
+          "description": "%config.agents.codex.path%"
         },
         "harness.agents.gemini.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Использовать Antigravity CLI (agy)."
+          "description": "%config.agents.gemini.enabled%"
         },
         "harness.agents.gemini.path": {
           "type": "string",
           "default": "agy",
-          "description": "Путь к бинарю agy."
+          "description": "%config.agents.gemini.path%"
         },
         "harness.team.maxIterations": {
           "type": "number",
           "default": 5,
           "minimum": 1,
           "maximum": 30,
-          "markdownDescription": "Автопилот команды: сколько итераций «план → задачи → проверка» лид может запустить без CEO, пока цель не достигнута."
+          "markdownDescription": "%config.team.maxIterations%"
         },
         "harness.team.maxHandoffs": {
           "type": "number",
           "default": 6,
           "minimum": 0,
           "maximum": 30,
-          "markdownDescription": "Сколько раз подряд агенты могут передать ход друг другу через @упоминание (`@codex, проверь`), прежде чем Harness остановится и подождёт CEO. `0` — упоминания агентов ход не передают."
+          "markdownDescription": "%config.team.maxHandoffs%"
         },
         "harness.routing.classifier": {
           "type": "string",
@@ -154,15 +173,15 @@
             "heuristic"
           ],
           "enumDescriptions": [
-            "Дешёвая модель (Haiku / Luna, low effort) оценивает сложность и область задачи; исполнителя выбирают правила.",
-            "Только эвристики по тексту, без лишних вызовов."
+            "%config.routing.classifier.llm%",
+            "%config.routing.classifier.heuristic%"
           ],
           "default": "llm",
-          "description": "Как роутер оценивает сложность и область задачи."
+          "description": "%config.routing.classifier%"
         },
         "harness.routing.affinity": {
           "type": "object",
-          "description": "Порядок предпочтения агентов по областям задач. Первый — основной кандидат.",
+          "description": "%config.routing.affinity%",
           "default": {
             "code": [
               "codex",
@@ -213,7 +232,7 @@
         },
         "harness.models": {
           "type": "object",
-          "description": "Какая модель и effort используются для каждого уровня сложности. Пустая модель — модель агента по умолчанию.",
+          "description": "%config.models%",
           "default": {
             "claude": {
               "trivial": {
@@ -273,12 +292,8 @@
         },
         "harness.strengths": {
           "type": "object",
-          "description": "Чем силён каждый агент — подсказка для роутера.",
-          "default": {
-            "claude": "архитектура и сложные многошаговые задачи в кодовой базе, frontend/UI, тексты, маркетинг, планирование",
-            "codex": "реализация и отладка кода, бэкенд, алгоритмы, тесты, точечные правки, код-ревью",
-            "gemini": "мультимодальность (изображения, графика, дизайн), веб-исследования, большие объёмы контекста"
-          }
+          "description": "%config.strengths%",
+          "default": {}
         }
       }
     }
@@ -288,7 +303,7 @@
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit -p .",
     "test": "node esbuild.mjs --tests && node --test dist-test/",
-    "package": "npm run build -- --production && vsce package --no-dependencies --allow-missing-repository --skip-license -o harness.vsix"
+    "package": "npm run build -- --production && vsce package --no-dependencies --skip-license -o harness.vsix"
   },
   "devDependencies": {
     "@types/markdown-it": "^14.1.2",

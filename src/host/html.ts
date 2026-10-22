@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
+import type { Locale } from '../i18n';
 
-export function renderHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
+export function renderHtml(webview: vscode.Webview, extensionUri: vscode.Uri, lang: Locale): string {
   const nonce = randomBytes(16).toString('base64');
   const asset = (name: string) => webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', name));
   const csp = [
@@ -13,7 +14,7 @@ export function renderHtml(webview: vscode.Webview, extensionUri: vscode.Uri): s
   ].join('; ');
 
   return `<!DOCTYPE html>
-<html lang="ru">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy" content="${csp}" />

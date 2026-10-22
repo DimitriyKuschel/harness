@@ -1,12 +1,13 @@
 import type { AgentView, Mode } from '../../core/types';
-import { AGENT_META, cx } from '../util';
+import { t, type Strings } from '../../i18n';
+import { AGENT_SHORT, cx } from '../util';
 import { post } from '../vscode';
 
-const SUGGESTIONS: { text: string; mode: Mode; icon: string }[] = [
-  { icon: 'lightbulb', mode: 'brainstorm', text: 'Как улучшить архитектуру этого проекта? Какие главные риски?' },
-  { icon: 'beaker', mode: 'auto', text: '@codex запусти тесты и почини то, что падает' },
-  { icon: 'checklist', mode: 'auto', text: 'Составь план развития проекта на месяц с приоритетами' },
-  { icon: 'megaphone', mode: 'brainstorm', text: 'Предложите SEO- и маркетинговую стратегию для запуска' },
+const SUGGESTIONS: { key: keyof Strings['empty']['suggestions']; mode: Mode; icon: string }[] = [
+  { icon: 'lightbulb', mode: 'brainstorm', key: 'architecture' },
+  { icon: 'beaker', mode: 'auto', key: 'tests' },
+  { icon: 'checklist', mode: 'auto', key: 'roadmap' },
+  { icon: 'megaphone', mode: 'brainstorm', key: 'marketing' },
 ];
 
 export function EmptyState({
@@ -21,22 +22,23 @@ export function EmptyState({
   onPick: (text: string, mode: Mode) => void;
 }) {
   const ready = agents.filter((a) => a.installed && a.enabled);
+  const s = t();
   return (
     <div className="empty">
       <div className="empty-avatars">
         {agents.map((a) => (
           <span key={a.id} className={cx('avatar', 'large', `agent-${a.id}`, !(a.installed && a.enabled) && 'off')}>
-            {AGENT_META[a.id].short}
+            {AGENT_SHORT[a.id]}
           </span>
         ))}
       </div>
-      <h2>Ваша AI-команда {ready.length ? 'на месте' : 'ещё не собрана'}</h2>
+      <h2>{s.empty.title(ready.length > 0)}</h2>
       <p className="empty-lead">
-        Опишите задачу — роутер сам выберет исполнителя, модель и effort, чтобы не тратить лимиты зря.
+        {s.empty.lead}
         {workspace && (
           <>
             {' '}
-            Работаем в проекте <b>{workspace}</b>.
+            {s.empty.project} <b>{workspace}</b>.
           </>
         )}
       </p>
@@ -44,13 +46,13 @@ export function EmptyState({
       <div className="team-cards">
         {agents.map((a) => (
           <div key={a.id} className={cx('team-card', `agent-${a.id}`, !(a.installed && a.enabled) && 'off')}>
-            <span className={cx('avatar', 'small')}>{AGENT_META[a.id].short}</span>
+            <span className={cx('avatar', 'small')}>{AGENT_SHORT[a.id]}</span>
             <div>
               <div className="team-card-name">
                 {a.label} {a.version && <span className="muted">{a.version}</span>}
               </div>
               <div className="team-card-hint">
-                {a.installed ? (a.enabled ? AGENT_META[a.id].tagline : 'выключен в настройках') : a.id === 'gemini' ? 'установите Antigravity CLI (agy)' : 'CLI не найден'}
+                {a.installed ? (a.enabled ? s.agents.taglines[a.id] : s.agents.disabledInSettings) : a.id === 'gemini' ? s.agents.installAgy : s.agents.cliNotFound}
               </div>
             </div>
           </div>
@@ -59,34 +61,34 @@ export function EmptyState({
 
       {ready.length === 0 && (
         <button className="primary-button" onClick={() => post({ type: 'command', command: 'refresh' })}>
-          <i className="codicon codicon-refresh" /> Проверить агентов ещё раз
+          <i className="codicon codicon-refresh" /> {s.empty.recheck}
         </button>
       )}
 
       {trusted && (
         <>
           <div className="suggestions">
-            {SUGGESTIONS.map((s) => (
-              <button key={s.text} className="suggestion" onClick={() => onPick(s.text, s.mode)}>
-                <i className={`codicon codicon-${s.icon}`} />
-                <span>{s.text}</span>
-                {s.mode === 'brainstorm' && <span className="suggestion-tag">брейншторм</span>}
+            {SUGGESTIONS.map((sg) => (
+              <button key={sg.key} className="suggestion" onClick={() => onPick(s.empty.suggestions[sg.key], sg.mode)}>
+                <i className={`codicon codicon-${sg.icon}`} />
+                <span>{s.empty.suggestions[sg.key]}</span>
+                {sg.mode === 'brainstorm' && <span className="suggestion-tag">{s.empty.brainstormTag}</span>}
               </button>
             ))}
           </div>
 
           <div className="tips">
             <span>
-              <kbd>Enter</kbd> отправить
+              <kbd>Enter</kbd> {s.empty.tips.send}
             </span>
             <span>
-              <kbd>Shift</kbd>+<kbd>Enter</kbd> новая строка
+              <kbd>Shift</kbd>+<kbd>Enter</kbd> {s.empty.tips.newline}
             </span>
             <span>
-              <kbd>@</kbd> позвать агента
+              <kbd>@</kbd> {s.empty.tips.mention}
             </span>
             <span>
-              <kbd>Esc</kbd> остановить
+              <kbd>Esc</kbd> {s.empty.tips.stop}
             </span>
           </div>
         </>

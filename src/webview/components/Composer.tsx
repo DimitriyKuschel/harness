@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent } from 'react';
 import type { AgentView, Autonomy, Mode, Prefs, Profile } from '../../core/types';
-import { AGENT_META, cx } from '../util';
+import { t } from '../../i18n';
+import { AGENT_SHORT, cx } from '../util';
 import { loadUiState, post, saveUiState } from '../vscode';
 
 export interface ComposerHandle {
@@ -22,23 +23,13 @@ interface MentionOption {
   disabled?: boolean;
 }
 
-const MODES: { id: Mode; label: string; icon: string; title: string }[] = [
-  { id: 'auto', label: 'Авто', icon: 'sparkle', title: 'Роутер выбирает исполнителя, модель и effort. Крупную работу сам отдаёт всей команде' },
-  { id: 'team', label: 'Команда', icon: 'organization', title: 'Лид составляет план и раздаёт задачи агентам по сильным сторонам, затем проверяет результат' },
-  { id: 'brainstorm', label: 'Брейншторм', icon: 'lightbulb', title: 'Все агенты отвечают независимо, модератор сводит мнения' },
+const MODES: { id: Mode; icon: string }[] = [
+  { id: 'auto', icon: 'sparkle' },
+  { id: 'team', icon: 'organization' },
+  { id: 'brainstorm', icon: 'lightbulb' },
 ];
-
-const PROFILES: { id: Profile; label: string; title: string }[] = [
-  { id: 'eco', label: 'Эко', title: 'На уровень проще: экономия лимитов' },
-  { id: 'balanced', label: 'Баланс', title: 'Как оценил роутер' },
-  { id: 'max', label: 'Макс', title: 'На уровень сильнее: качество важнее лимитов' },
-];
-
-const AUTONOMY: { id: Autonomy; label: string; title: string }[] = [
-  { id: 'readonly', label: 'Только чтение', title: 'Агенты читают проект, но ничего не меняют' },
-  { id: 'auto', label: 'Правки', title: 'Агенты правят файлы в проекте; опасные команды — по их авто-проверке' },
-  { id: 'full', label: 'Полный доступ', title: 'Без песочницы и подтверждений. Только для доверенных задач' },
-];
+const PROFILES: Profile[] = ['eco', 'balanced', 'max'];
+const AUTONOMY: Autonomy[] = ['readonly', 'auto', 'full'];
 
 export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ prefs, onPrefs, agents, running, queue }, ref) {
   const [text, setText] = useState(() => (loadUiState<{ draft: string }>().draft as string) ?? '');
@@ -73,14 +64,16 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ pr
     return () => window.removeEventListener('focus', focus);
   }, []);
 
+  const s = t();
+  const c = s.composer;
   const options: MentionOption[] = [
     ...agents.map((a) => ({
       id: a.id,
       label: a.label,
-      hint: a.installed && a.enabled ? AGENT_META[a.id].tagline : a.installed ? 'выключен' : 'не установлен',
+      hint: a.installed && a.enabled ? s.agents.taglines[a.id] : a.installed ? s.agents.disabled : s.agents.notInstalled,
       disabled: !a.installed || !a.enabled,
     })),
-    { id: 'all', label: 'Все', hint: 'брейншторм всей командой' },
+    { id: 'all', label: c.mentionAll, hint: c.mentionAllHint },
   ].filter((o) => !mention || o.id.startsWith(mention.query.toLowerCase()) || o.label.toLowerCase().startsWith(mention.query.toLowerCase()));
 
   const updateMention = (value: string, caret: number) => {
@@ -145,7 +138,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ pr
             <div key={i} className="queue-item" title={q}>
               <i className="codicon codicon-clock" />
               <span>{q}</span>
-              <button className="icon-button subtle" title="Убрать из очереди" onClick={() => post({ type: 'unqueue', index: i })}>
+              <button className="icon-button subtle" title={c.unqueue} onClick={() => post({ type: 'unqueue', index: i })}>
                 <i className="codicon codicon-close" />
               </button>
             </div>
@@ -171,7 +164,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ pr
                     <i className="codicon codicon-organization" />
                   </span>
                 ) : (
-                  <span className={cx('avatar', 'small', `agent-${o.id}`)}>{AGENT_META[o.id as keyof typeof AGENT_META].short}</span>
+                  <span className={cx('avatar', 'small', `agent-${o.id}`)}>{AGENT_SHORT[o.id as keyof typeof AGENT_SHORT]}</span>
                 )}
                 <span className="mention-label">@{o.id}</span>
                 <span className="mention-hint">{o.hint}</span>
@@ -183,13 +176,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ pr
           ref={area}
           value={text}
           rows={1}
-          placeholder={
-            prefs.mode === 'brainstorm'
-              ? 'Тема для брейншторма — ответят все агенты…'
-              : prefs.mode === 'team'
-                ? 'Задача для всей команды — лид распределит работу…'
-                : 'Задача для команды. @claude, @codex, @gemini — обратиться напрямую'
-          }
+          placeholder={c.placeholders[prefs.mode]}
           onChange={(e) => {
             setText(e.target.value);
             updateMention(e.target.value, e.target.selectionStart);
@@ -199,13 +186,13 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ pr
         />
         <div className="input-actions">
           {running && (
-            <button className="icon-button stop" title="Остановить всех (Esc)" onClick={() => post({ type: 'stop' })}>
+            <button className="icon-button stop" title={c.stopAll} onClick={() => post({ type: 'stop' })}>
               <i className="codicon codicon-debug-stop" />
             </button>
           )}
           <button
             className="send-button"
-            title={running ? 'Поставить в очередь (Enter)' : 'Отправить (Enter)'}
+            title={running ? c.queue : c.send}
             disabled={!text.trim()}
             onClick={send}
           >
@@ -215,18 +202,18 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ pr
       </div>
 
       <div className="toolbar">
-        <div className="segmented" role="radiogroup" aria-label="Режим">
+        <div className="segmented" role="radiogroup" aria-label={c.mode}>
           {MODES.map((m) => (
             <button
               key={m.id}
               role="radio"
               aria-checked={prefs.mode === m.id}
               className={cx(prefs.mode === m.id && 'selected')}
-              title={m.title}
+              title={c.modes[m.id].title}
               onClick={() => onPrefs({ ...prefs, mode: m.id })}
             >
               <i className={`codicon codicon-${m.icon}`} />
-              {m.label}
+              {c.modes[m.id].label}
             </button>
           ))}
         </div>
@@ -235,30 +222,26 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ pr
             className={cx('picker-button', 'toggle', prefs.autopilot && 'on')}
             role="switch"
             aria-checked={prefs.autopilot}
-            title={
-              prefs.autopilot
-                ? 'Автопилот включён: команда работает итерациями «план → задачи → проверка», пока лид не признает цель достигнутой или ему не понадобится ваше решение'
-                : 'Автопилот выключен: после проверки лид ждёт вашего решения'
-            }
+            title={prefs.autopilot ? c.autopilotOn : c.autopilotOff}
             onClick={() => onPrefs({ ...prefs, autopilot: !prefs.autopilot })}
           >
             <i className={cx('codicon', prefs.autopilot ? 'codicon-sync' : 'codicon-debug-pause')} />
-            Автопилот
+            {c.autopilot}
           </button>
         )}
         <Picker
           icon="dashboard"
           value={prefs.profile}
-          options={PROFILES}
+          options={PROFILES.map((id) => ({ id, ...c.profiles[id] }))}
           onChange={(profile) => onPrefs({ ...prefs, profile })}
-          label="Расход лимитов"
+          label={c.profile}
         />
         <Picker
           icon={prefs.autonomy === 'readonly' ? 'lock' : prefs.autonomy === 'full' ? 'warning' : 'edit'}
           value={prefs.autonomy}
-          options={AUTONOMY}
+          options={AUTONOMY.map((id) => ({ id, ...c.autonomy[id] }))}
           onChange={(autonomy) => onPrefs({ ...prefs, autonomy })}
-          label="Что агентам можно делать в проекте"
+          label={c.access}
           danger={prefs.autonomy === 'full'}
         />
       </div>

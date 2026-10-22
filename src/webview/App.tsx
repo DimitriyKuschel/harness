@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AGENT_LABELS, type Mode, type Prefs, type ViewState } from '../core/types';
+import { setLocale, t } from '../i18n';
 import type { ToWebview } from '../protocol';
 import { Composer, type ComposerHandle } from './components/Composer';
 import { EmptyState } from './components/EmptyState';
@@ -80,6 +81,8 @@ export function App() {
     );
   }
 
+  // Module-level strings read the locale at render time, so set it before anything renders.
+  setLocale(state.locale);
   const { messages } = state.conversation;
   const canReview = state.agents.filter((a) => a.installed && a.enabled).length >= 2;
 
@@ -108,7 +111,7 @@ export function App() {
         </div>
       </div>
       {!atBottom && messages.length > 0 && (
-        <button className="scroll-down" onClick={scrollDown} title="К последнему сообщению">
+        <button className="scroll-down" onClick={scrollDown} title={t().scrollDown}>
           <i className="codicon codicon-arrow-down" />
         </button>
       )}

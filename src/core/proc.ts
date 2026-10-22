@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { access, constants } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { delimiter, isAbsolute, join } from 'node:path';
+import { t } from '../i18n';
 import { createInterface } from 'node:readline';
 
 export interface Logger {
@@ -87,7 +88,7 @@ export function runJsonl(
     child.on('error', (err: NodeJS.ErrnoException) => {
       // spawn reports a missing cwd as ENOENT of the binary, which sends people hunting the wrong problem.
       const missingCwd = err.code === 'ENOENT' && !existsSync(opts.cwd);
-      stderr += `\n${missingCwd ? `рабочая папка не найдена: ${opts.cwd}` : err.message}`;
+      stderr += `\n${missingCwd ? t().cli.missingCwd(opts.cwd) : err.message}`;
       finish(null);
     });
     child.on('close', (code) => finish(code));

@@ -1,6 +1,7 @@
 // Team plans: the lead answers in prose and ends with machine-readable blocks the orchestrator acts on:
 // ```team-plan (tasks to execute) and, after an iteration, ```team-status (is the goal reached?).
 // Pure helpers (no Node APIs): the webview uses stripPlanBlock too.
+import { t } from '../i18n';
 import { DOMAINS, TIERS, type AgentId, type Domain, type PlanTask, type TeamStatus, type Tier } from './types';
 
 const FENCE = '```team-plan';
@@ -47,6 +48,7 @@ export function parsePlan(text: string, assign: (domain: Domain, wanted?: string
   if (!list) return undefined;
 
   const tasks: PlanTask[] = [];
+  const { taskTitle } = t();
   for (const [i, t] of list.slice(0, MAX_TASKS).entries()) {
     if (!t || typeof t !== 'object' || !String(t.task ?? '').trim()) continue;
     const domain: Domain = DOMAINS.includes(t.domain) ? t.domain : 'other';
@@ -56,7 +58,7 @@ export function parsePlan(text: string, assign: (domain: Domain, wanted?: string
     if (tasks.some((x) => x.id === id)) continue;
     tasks.push({
       id,
-      title: String(t.title ?? '').trim().slice(0, 120) || `Задача ${i + 1}`,
+      title: String(t.title ?? '').trim().slice(0, 120) || taskTitle(i + 1),
       agent,
       domain,
       tier: TIERS.includes(t.tier) ? (t.tier as Tier) : 'standard',

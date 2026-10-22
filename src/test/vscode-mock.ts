@@ -126,6 +126,7 @@ export const commands = {
 };
 
 export const env = {
+  language: 'en',
   clipboard: {
     writeText: async (t: string) => {
       mock.clipboard = t;

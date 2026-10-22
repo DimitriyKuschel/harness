@@ -1,6 +1,7 @@
 import { open, readdir, writeFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { t } from '../../i18n';
 import type { AgentAdapter, AgentEvent, AgentLimits, AgentStatus, LimitWindow, RunOutcome, RunRequest, Usage } from '../types';
 import { type Logger, nullLogger, resolveBinary, runJsonl, runText, truncate, tryParseJson } from '../proc';
 import { shortPath } from './claude';
@@ -16,7 +17,7 @@ export class CodexAdapter implements AgentAdapter {
 
   async detect(): Promise<AgentStatus> {
     const path = await resolveBinary(this.binary());
-    if (!path) return { id: this.id, installed: false, error: `«${this.binary()}» не найден` };
+    if (!path) return { id: this.id, installed: false, error: t().cli.notFound(this.binary()) };
     try {
       const version = (await runText(path, ['--version'])).replace(/^codex-cli\s*/, '');
       return { id: this.id, installed: true, version, path };
@@ -68,9 +69,9 @@ export class CodexAdapter implements AgentAdapter {
         if (limits) onEvent({ kind: 'limits', limits });
       }
 
-      if (res.aborted) return { ok: false, text: state.text, sessionId, error: 'остановлено' };
+      if (res.aborted) return { ok: false, text: state.text, sessionId, error: t().cli.stopped };
       if (state.failure || (res.code !== 0 && !state.completed)) {
-        const error = state.failure ?? (res.stderr.trim().split('\n').slice(-3).join('\n') || `codex завершился с кодом ${res.code}`);
+        const error = state.failure ?? (res.stderr.trim().split('\n').slice(-3).join('\n') || t().cli.exited('codex', res.code));
         return { ok: false, text: state.text, sessionId, error, usage: state.usage };
       }
       let structured: unknown;
@@ -124,10 +125,10 @@ class CodexStream {
         }
         break;
       case 'turn.failed':
-        this.failure = ev.error?.message ?? 'ход завершился ошибкой';
+        this.failure = ev.error?.message ?? t().cli.turnFailed;
         break;
       case 'error':
-        this.failure = ev.message ?? 'ошибка codex';
+        this.failure = ev.message ?? t().cli.codexError;
         break;
     }
   }
@@ -171,7 +172,7 @@ class CodexStream {
         if (completed) this.emit({ kind: 'tool_done', id, ok: true });
         break;
       case 'todo_list':
-        this.tool(id, 'Plan', Array.isArray(item.items) ? `${item.items.length} пунктов` : undefined);
+        this.tool(id, 'Plan', Array.isArray(item.items) ? t().cli.items(item.items.length) : undefined);
         if (completed) this.emit({ kind: 'tool_done', id, ok: true });
         break;
     }

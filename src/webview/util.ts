@@ -1,10 +1,8 @@
 import type { AgentId, AgentLimits, LimitWindow } from '../core/types';
+import { t } from '../i18n';
 
-export const AGENT_META: Record<AgentId, { short: string; tagline: string }> = {
-  claude: { short: 'Cl', tagline: 'архитектура, UI, тексты, планирование' },
-  codex: { short: 'Cx', tagline: 'реализация кода, бэкенд, тесты, ревью' },
-  gemini: { short: 'Gm', tagline: 'графика, мультимодальность, исследования' },
-};
+/** Avatar initials. */
+export const AGENT_SHORT: Record<AgentId, string> = { claude: 'Cl', codex: 'Cx', gemini: 'Gm' };
 
 export function formatTokens(n: number): string {
   if (n < 1000) return String(n);
@@ -14,30 +12,30 @@ export function formatTokens(n: number): string {
 
 export function formatDuration(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
-  if (s < 60) return `${s} с`;
-  const m = Math.floor(s / 60);
-  return s % 60 ? `${m} мин ${s % 60} с` : `${m} мин`;
+  if (s < 60) return t().time.seconds(s);
+  return t().time.minutes(Math.floor(s / 60), s % 60);
 }
 
 export function relativeTime(ts: number, now = Date.now()): string {
+  const { time, dateLocale } = t();
   const diff = now - ts;
-  if (diff < 60_000) return 'только что';
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} мин назад`;
+  if (diff < 60_000) return time.justNow;
+  if (diff < 3_600_000) return time.minutesAgo(Math.floor(diff / 60_000));
   const d = new Date(ts);
   const today = new Date(now);
-  if (d.toDateString() === today.toDateString()) return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === today.toDateString()) return d.toLocaleTimeString(dateLocale, { hour: '2-digit', minute: '2-digit' });
   const yesterday = new Date(now - 86_400_000);
-  if (d.toDateString() === yesterday.toDateString()) return 'вчера';
-  return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+  if (d.toDateString() === yesterday.toDateString()) return time.yesterday;
+  return d.toLocaleDateString(dateLocale, { day: 'numeric', month: 'short' });
 }
 
 export function formatReset(unixSeconds?: number): string {
   if (!unixSeconds) return '';
+  const { limits, dateLocale } = t();
   const d = new Date(unixSeconds * 1000);
-  const sameDay = d.toDateString() === new Date().toDateString();
-  return sameDay
-    ? `сброс в ${d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`
-    : `сброс ${d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}, ${d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`;
+  const time = d.toLocaleTimeString(dateLocale, { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === new Date().toDateString()) return limits.resetsAt(time);
+  return limits.resetsOn(d.toLocaleDateString(dateLocale, { day: 'numeric', month: 'short' }), time);
 }
 
 /** A window whose reset time has passed is effectively empty again. */
@@ -52,15 +50,16 @@ export function limitLevel(pct: number): 'ok' | 'warn' | 'high' {
 }
 
 export function limitsTooltip(l?: AgentLimits): string {
-  if (!l) return 'Лимиты ещё не получены';
+  const { limits } = t();
+  if (!l) return limits.notYet;
   const part = (name: string, w?: LimitWindow | null) => {
-    if (w === null) return `${name}: у тарифа нет такого лимита`;
+    if (w === null) return limits.noWindow(name);
     const live = liveWindow(w);
-    if (!live) return `${name}: нет данных`;
+    if (!live) return limits.noData(name);
     const reset = live === w && w.resetsAt ? ` (${formatReset(w.resetsAt)})` : '';
-    return `${name}: осталось ${Math.round(100 - live.usedPercent)}%${reset}`;
+    return `${limits.left(name, Math.round(100 - live.usedPercent))}${reset}`;
   };
-  return [part('5 часов', l.fiveHour), part('Неделя', l.weekly), `Обновлено: ${relativeTime(l.updatedAt)}`].join('\n');
+  return [part(limits.fiveHours, l.fiveHour), part(limits.week, l.weekly), limits.updated(relativeTime(l.updatedAt))].join('\n');
 }
 
 const TOOL_ICONS: [RegExp, string][] = [

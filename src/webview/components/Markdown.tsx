@@ -1,5 +1,6 @@
 import MarkdownIt from 'markdown-it';
 import { memo, useMemo, type MouseEvent } from 'react';
+import { t } from '../../i18n';
 import { post } from '../vscode';
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
@@ -8,19 +9,19 @@ const escape = md.utils.escapeHtml;
 const FILE_REF = /^(?:\.{1,2}\/|\/)?[\w@.\-[\]]+(?:\/[\w@.\-[\]]+)*\.[A-Za-z][A-Za-z0-9]{0,7}(?::\d+(?::\d+)?)?$/;
 
 md.renderer.rules.fence = (tokens, idx) => {
-  const t = tokens[idx];
-  const lang = t.info.trim().split(/\s+/)[0] ?? '';
+  const token = tokens[idx];
+  const lang = token.info.trim().split(/\s+/)[0] ?? '';
   return (
     `<div class="codeblock"><div class="codeblock-head"><span>${escape(lang)}</span>` +
-    `<button class="codeblock-copy" data-code="${escape(t.content)}" title="Копировать"><i class="codicon codicon-copy"></i></button></div>` +
-    `<pre><code>${escape(t.content)}</code></pre></div>`
+    `<button class="codeblock-copy" data-code="${escape(token.content)}" title="${escape(t().copy)}"><i class="codicon codicon-copy"></i></button></div>` +
+    `<pre><code>${escape(token.content)}</code></pre></div>`
   );
 };
 
 md.renderer.rules.code_inline = (tokens, idx) => {
   const content = tokens[idx].content;
   if (FILE_REF.test(content) && !/^\d/.test(content)) {
-    return `<code class="file-ref" data-path="${escape(content)}" title="Открыть файл">${escape(content)}</code>`;
+    return `<code class="file-ref" data-path="${escape(content)}" title="${escape(t().openFile)}">${escape(content)}</code>`;
   }
   return `<code>${escape(content)}</code>`;
 };

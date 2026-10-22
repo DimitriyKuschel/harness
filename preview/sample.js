@@ -133,5 +133,7 @@ function sampleState(empty) {
     prefs: { mode: teamMode ? 'team' : 'auto', profile: 'balanced', autonomy: 'auto', autopilot: true },
     workspace: 'my-service',
     trusted: !new URLSearchParams(location.search).has('untrusted'),
+    // The sample chat is in Russian; ?lang=en switches the UI around it.
+    locale: new URLSearchParams(location.search).get('lang') === 'en' ? 'en' : 'ru',
   };
 }

@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
+import { t } from '../i18n';
 import { parsePlan, parseStatus, stripPlanBlock } from './plan';
+import { prompts } from './prompts';
 import type { Logger } from './proc';
 import { truncate } from './proc';
 import { type Router, bumpTier, effectiveUsage, heuristicAssessment, quotaPenalty, shiftTier, type RouteContext } from './router';
 import {
   AGENT_IDS,
   AGENT_LABELS,
-  DOMAINS,
   TIERS,
   messageText,
   type AgentAdapter,
@@ -115,7 +116,7 @@ export function handoffMentions(text: string): { agents: AgentId[]; all: boolean
 
 export function newConversation(): Conversation {
   const now = Date.now();
-  return { id: randomUUID(), title: 'Новый чат', createdAt: now, updatedAt: now, messages: [], sessions: {} };
+  return { id: randomUUID(), title: t().newChat, createdAt: now, updatedAt: now, messages: [], sessions: {} };
 }
 
 export class Orchestrator {
@@ -161,14 +162,14 @@ export class Orchestrator {
 
     const available = this.deps.available();
     if (!available.length) {
-      this.notice('Нет доступных агентов. Проверьте, что CLI установлены и включены в настройках Harness.', user.id);
+      this.notice(t().notices.noAgents, user.id);
       return this.settle();
     }
 
     const mentions = parseMentions(text);
     const mentioned = mentions.agents.filter((a) => available.includes(a));
     const missing = mentions.agents.filter((a) => !available.includes(a));
-    if (missing.length) this.notice(`Недоступны: ${missing.map((a) => AGENT_LABELS[a]).join(', ')} — пропускаю.`, user.id);
+    if (missing.length) this.notice(t().notices.unavailable(missing.map((a) => AGENT_LABELS[a]).join(', ')), user.id);
 
     const ctx = this.routeContext(prefs, userIdx);
     const base = { contextUntil: userIdx - 1, seenAfter: userIdx, replyTo: user.id };
@@ -223,12 +224,12 @@ export class Orchestrator {
     const domain = target.route?.domain ?? 'code';
     const reviewer = this.deps.router.pickAgent({ domain }, { ...ctx, busy: new Set() }, [target.agent]);
     if (!reviewer) {
-      this.notice('Для ревью нужен второй доступный агент.', target.id);
+      this.notice(t().notices.reviewNeedsSecond, target.id);
       return this.settle();
     }
     const question = this.find(target.replyTo ?? '');
     const tier = clampTier(target.route?.tier ?? 'standard', discussionTier(question ? messageText(question) : '', prefs.profile), 'critical');
-    const route = this.deps.router.finish(reviewer, { ...heuristicAssessment(''), tier, domain, reason: `ревью ответа ${AGENT_LABELS[target.agent]}` }, { ...ctx, autonomy: 'readonly' }, 'system', true);
+    const route = this.deps.router.finish(reviewer, { ...heuristicAssessment(''), tier, domain, reason: t().reasons.review(AGENT_LABELS[target.agent]) }, { ...ctx, autonomy: 'readonly' }, 'system', true);
     const last = this.conversation.messages.length - 1;
     try {
       const msg = await this.dispatch({
@@ -253,7 +254,7 @@ export class Orchestrator {
     if (!review?.agent || !target?.agent) return;
     const ctx = this.routeContext(prefs, this.conversation.messages.length);
     const route = this.deps.router.forAgent(target.agent, '', ctx, target.route?.tier ?? 'standard');
-    route.reason = `исправления по ревью ${AGENT_LABELS[review.agent]}`;
+    route.reason = t().reasons.fix(AGENT_LABELS[review.agent]);
     route.domain = target.route?.domain ?? route.domain;
     const last = this.conversation.messages.length - 1;
     try {
@@ -264,13 +265,7 @@ export class Orchestrator {
         contextUntil: last,
         seenAfter: last,
         excludeIds: [review.id],
-        task: [
-          `${AGENT_LABELS[review.agent]} проверил твою работу и оставил замечания:`,
-          '"""',
-          messageText(review),
-          '"""',
-          'Исправь то, с чем согласен. Если с каким-то замечанием не согласен — коротко объясни почему. В конце перечисли, что изменил.',
-        ].join('\n'),
+        task: prompts().fix(AGENT_LABELS[review.agent], messageText(review)),
       });
       await this.relay([msg], prefs);
     } finally {
@@ -278,7 +273,7 @@ export class Orchestrator {
     }
   }
 
-  /** Same agent again: one tier up ("сильнее"), or the same tier after a failure. */
+  /** Same agent again: one tier up ("Stronger"), or the same tier after a failure. */
   async rerun(messageId: string, prefs: Prefs, stronger: boolean): Promise<void> {
     const target = this.find(messageId);
     if (!target?.agent || !this.deps.available().includes(target.agent)) return;
@@ -297,14 +292,12 @@ export class Orchestrator {
     const current = target.route?.tier ?? 'standard';
     const ctx = this.routeContext(prefs, this.conversation.messages.length);
     const route = this.deps.router.forAgent(target.agent, '', ctx, stronger ? bumpTier(current) : current);
-    route.reason = stronger ? 'CEO попросил сильнее' : 'повтор после ошибки';
+    route.reason = stronger ? t().reasons.stronger : t().reasons.retry;
     route.domain = target.route?.domain ?? route.domain;
     if (target.route && (target.kind === 'brainstorm' || target.kind === 'debate' || target.kind === 'review')) route.autonomy = target.route.autonomy;
     const last = this.conversation.messages.length - 1;
-    const instruction = stronger
-      ? 'CEO просит сделать эту задачу заново, тщательнее и глубже (теперь у тебя модель сильнее и больше reasoning).'
-      : 'Предыдущая попытка оборвалась с ошибкой. Выполни задачу ещё раз.';
-    const brief = target.prompt ?? (question ? `Задача:\n"""\n${messageText(question)}\n"""` : '');
+    const instruction = stronger ? prompts().stronger : prompts().retry;
+    const brief = target.prompt ?? (question ? prompts().taskQuote(messageText(question)) : '');
     const planTask = target.taskId ? question?.plan?.find((t) => t.id === target.taskId) : undefined;
     if (planTask) planTask.status = 'running';
     try {
@@ -352,17 +345,13 @@ export class Orchestrator {
       const answers = await Promise.all(
         team.map((agent) =>
           this.dispatch({
-            route: this.deps.router.finish(agent, { ...heuristicAssessment(''), tier, reason: 'раунд обсуждения' }, { ...ctx, autonomy: 'readonly' }, 'system', true),
+            route: this.deps.router.finish(agent, { ...heuristicAssessment(''), tier, reason: t().reasons.debate }, { ...ctx, autonomy: 'readonly' }, 'system', true),
             kind: 'debate',
             round,
             replyTo: question.id,
             contextUntil: last,
             seenAfter: last,
-            task: [
-              `Раунд обсуждения по вопросу CEO:\n"""\n${messageText(question)}\n"""`,
-              'Выше — ответы коллег и сводка модератора. Критически оцени их: с чем согласен, с чем нет и почему, что упущено.',
-              'Затем дай обновлённую рекомендацию. Если с кем-то согласен полностью — так и скажи, не повторяй аргументы. До ~250 слов. Ничего не меняй в файлах.',
-            ].join('\n'),
+            task: prompts().debate(messageText(question)),
           }),
         ),
       );
@@ -384,18 +373,13 @@ export class Orchestrator {
     const answers = await Promise.all(
       team.map((agent) =>
         this.dispatch({
-          route: this.deps.router.finish(agent, { ...h, tier, reason: 'брейншторм' }, { ...ctx, autonomy: 'readonly' }, 'system', true),
+          route: this.deps.router.finish(agent, { ...h, tier, reason: t().reasons.brainstorm }, { ...ctx, autonomy: 'readonly' }, 'system', true),
           kind: 'brainstorm',
           round,
           replyTo: user.id,
           contextUntil: userIdx - 1,
           seenAfter: userIdx,
-          task: [
-            'Режим брейншторма: CEO спрашивает всю команду. Коллеги отвечают параллельно — дай своё независимое мнение.',
-            `"""\n${text}\n"""`,
-            'Структура: ключевая идея или подход; 2–4 варианта или аргумента; риски; твоя рекомендация. Конкретно, до ~300 слов.',
-            'Файлы проекта читать можно, менять — нельзя.',
-          ].join('\n'),
+          task: prompts().brainstorm(text),
         }),
       ),
     );
@@ -411,26 +395,17 @@ export class Orchestrator {
     const tier = discussionTier(messageText(question), prefs.profile);
     const last = this.conversation.messages.length - 1;
     await this.dispatch({
-      route: this.deps.router.finish(moderator, { ...heuristicAssessment(''), tier, reason: 'модератор: сводка мнений' }, { ...ctx, autonomy: 'readonly' }, 'system', true),
+      route: this.deps.router.finish(moderator, { ...heuristicAssessment(''), tier, reason: t().reasons.synthesis }, { ...ctx, autonomy: 'readonly' }, 'system', true),
       kind: 'synthesis',
       round,
       replyTo: question.id,
       contextUntil: last,
       seenAfter: last,
       ephemeral: true,
-      task: [
-        'Ты модератор командного брейншторма. Вопрос CEO:',
-        `"""\n${messageText(question)}\n"""`,
-        '',
-        'Ответы участников:',
-        ...ok.map((m) => `\n### ${AGENT_LABELS[m.agent!]}\n${truncate(messageText(m), 6000)}`),
-        '',
-        'Сведи их для CEO, кратко и без пересказа ответов целиком:',
-        '1. **Консенсус** — в чём участники согласны.',
-        '2. **Расхождения** — где мнения разошлись: кто что предлагает и почему.',
-        '3. **Рекомендация** — что делать, с учётом аргументов всех.',
-        '4. **Вопросы к CEO** — что нужно решить или уточнить (если есть).',
-      ].join('\n'),
+      task: prompts().synthesis(
+        messageText(question),
+        ok.map((m) => `\n### ${AGENT_LABELS[m.agent!]}\n${truncate(messageText(m), 6000)}`).join('\n'),
+      ),
     });
   }
 
@@ -452,7 +427,7 @@ export class Orchestrator {
     if (!lead) return;
 
     const assessed = routed?.route.tier ?? heuristicAssessment(text).tier;
-    const reason = routed ? `командная задача: ${routed.route.reason}` : 'лид: план и распределение задач';
+    const reason = routed ? t().reasons.teamTask(routed.route.reason) : t().reasons.leadPlan;
     const plan = await this.dispatch({
       route: this.deps.router.finish(
         lead,
@@ -466,14 +441,14 @@ export class Orchestrator {
       iteration: 1,
       contextUntil: userIdx - 1,
       seenAfter: userIdx,
-      task: leadTask(text, this.deps.router.roster(ctx)),
+      task: prompts().lead(text, this.deps.router.roster(ctx)),
       message: routed?.placeholder,
     });
     const tasks = this.takePlan(plan, ctx);
     if (tasks?.length) await this.teamLoop(plan, tasks, user, lead, prefs, 1);
   }
 
-  /** «Ещё итерация» under the lead's check: run the plan it already made, or plan the next step. */
+  /** "Another iteration" under the lead's check: run the plan it already made, or plan the next step. */
   async continueTeam(reportId: string, prefs: Prefs): Promise<void> {
     const report = this.find(reportId);
     const goal = this.find(report?.goal ?? '');
@@ -491,7 +466,7 @@ export class Orchestrator {
       const plan = await this.dispatch({
         route: this.deps.router.finish(
           lead,
-          { ...heuristicAssessment(''), tier: 'standard', domain: 'planning', reason: `лид: план итерации ${iteration}` },
+          { ...heuristicAssessment(''), tier: 'standard', domain: 'planning', reason: t().reasons.leadIterationPlan(iteration) },
           { ...ctx, autonomy: 'readonly' },
           'system',
         ),
@@ -501,7 +476,7 @@ export class Orchestrator {
         iteration,
         contextUntil: last,
         seenAfter: last,
-        task: nextPlanTask(messageText(goal), iteration, this.deps.router.roster(ctx)),
+        task: prompts().nextPlan(truncate(messageText(goal), 4000), iteration, this.deps.router.roster(ctx)),
       });
       const tasks = this.takePlan(plan, ctx);
       if (tasks?.length) await this.teamLoop(plan, tasks, goal, lead, prefs, iteration);
@@ -528,10 +503,7 @@ export class Orchestrator {
     if (status) msg.teamStatus = status;
     for (const p of msg.parts) if (p.type === 'text') p.text = stripPlanBlock(p.text);
     if (tasks?.length) msg.plan = tasks;
-    else if (!tasks && raw.includes('```team-plan')) {
-      const hint = msg.kind === 'plan' ? 'Нажмите «Повторить» под планом.' : 'Нажмите «Ещё итерация».';
-      this.notice(`Не удалось разобрать план лида — задачи не розданы. ${hint}`, msg.id);
-    }
+    else if (!tasks && raw.includes('```team-plan')) this.notice(t().notices.planUnparsed(msg.kind === 'plan'), msg.id);
     this.deps.onChange();
     return tasks;
   }
@@ -545,7 +517,7 @@ export class Orchestrator {
         await this.runPlan(planMsg, tasks, lead, prefs, ac.signal, iteration, goal.id);
         if (ac.signal.aborted) return;
         if (!tasks.some((t) => t.status === 'done')) {
-          this.notice('Ни одна задача итерации не выполнена — команда остановилась. Причины — в сообщениях выше.', planMsg.id);
+          this.notice(t().notices.noTaskDone, planMsg.id);
           return;
         }
 
@@ -554,10 +526,11 @@ export class Orchestrator {
         const mayPlan = prefs.autopilot && iteration < max;
         const last = this.settledUntil();
         const prompt = reportTask(messageText(goal), tasks, iteration, mayPlan ? this.deps.router.roster(ctx) : undefined);
+        const notices = t().notices;
         const report = await this.dispatch({
           route: this.deps.router.finish(
             this.leadFor(ctx, lead) ?? lead,
-            { ...heuristicAssessment(''), tier: discussionTier(messageText(goal), prefs.profile), domain: 'planning', reason: `лид: проверка итерации ${iteration}` },
+            { ...heuristicAssessment(''), tier: discussionTier(messageText(goal), prefs.profile), domain: 'planning', reason: t().reasons.leadCheck(iteration) },
             ctx,
             'system',
             true,
@@ -575,11 +548,11 @@ export class Orchestrator {
         const next = this.takePlan(report, ctx);
         if (report.teamStatus?.status !== 'continue' || !prefs.autopilot) return;
 
-        const stop = (why: string) => this.notice(`Автопилот остановлен: ${why}`, report.id);
-        if (iteration >= max) return stop(`достигнут лимит итераций (${max}). Нажмите «Ещё итерация», чтобы продолжить.`);
-        if (this.deps.hasQueued()) return stop('у CEO новое сообщение — сначала оно.');
-        if (team.every((a) => effectiveUsage(ctx.limits[a]) >= 90)) return stop('лимиты подписок почти исчерпаны.');
-        if (!next?.length) return stop('лид не дал план следующей итерации. Нажмите «Ещё итерация».');
+        const stop = (why: string) => this.notice(notices.autopilotStopped(why), report.id);
+        if (iteration >= max) return stop(notices.stopIterations(max));
+        if (this.deps.hasQueued()) return stop(notices.stopQueued);
+        if (team.every((a) => effectiveUsage(ctx.limits[a]) >= 90)) return stop(notices.stopQuota);
+        if (!next?.length) return stop(notices.stopNoPlan);
 
         planMsg = report;
         tasks = next;
@@ -607,18 +580,20 @@ export class Orchestrator {
     const byId = new Map(tasks.map((t) => [t.id, t]));
     const failed = (t: PlanTask) => t.status === 'error' || t.status === 'stopped' || t.status === 'skipped';
     const active = new Map<string, Promise<void>>();
+    const { reasons } = t();
+    const iterationLabel = iteration > 1 ? `${t().iteration(iteration)} · ` : '';
 
     const run = async (t: PlanTask) => {
       const n = tasks.indexOf(t) + 1;
       const ctx = this.routeContext(prefs, this.conversation.messages.length);
       const route = this.deps.router.finish(
         t.agent,
-        { ...heuristicAssessment(''), tier: t.tier, domain: t.domain, reason: `задача ${n}/${tasks.length} из плана ${AGENT_LABELS[lead]}` },
+        { ...heuristicAssessment(''), tier: t.tier, domain: t.domain, reason: reasons.planTask(n, tasks.length, AGENT_LABELS[lead]) },
         ctx,
         'system',
       );
       const last = this.settledUntil();
-      const prompt = taskBrief(t, n, tasks.length, lead);
+      const prompt = prompts().taskBrief(n, tasks.length, AGENT_LABELS[lead], t.title, t.task, t.scope);
       const msg = this.add({ role: 'agent', parts: [], status: 'streaming' });
       t.messageId = msg.id;
       await this.dispatch({
@@ -628,7 +603,7 @@ export class Orchestrator {
         goal: goalId,
         iteration,
         taskId: t.id,
-        subtitle: `${iteration > 1 ? `итерация ${iteration} · ` : ''}${n}/${tasks.length} · ${t.title}`,
+        subtitle: `${iterationLabel}${n}/${tasks.length} · ${t.title}`,
         contextUntil: last,
         seenAfter: last,
         task: prompt,
@@ -673,12 +648,11 @@ export class Orchestrator {
       for (let round = 0; ; round++) {
         const asks = this.handoffs(replies);
         if (!asks.size || ac.signal.aborted) return;
-        const waiting = [...asks].map(([agent, from]) => `${AGENT_LABELS[agent]} (зовёт ${senders(from)})`).join(', ');
+        const notices = t().notices;
+        const waiting = [...asks].map(([agent, from]) => notices.calledBy(AGENT_LABELS[agent], senders(from))).join(', ');
         const anchor = replies[replies.length - 1].id;
-        if (round >= max) {
-          return this.notice(`Агенты передали ход друг другу ${max} раз подряд — дальше решает CEO. Ждут ответа: ${waiting}. Упомяните агента, чтобы продолжить.`, anchor);
-        }
-        if (this.deps.hasQueued()) return this.notice(`Передача хода отложена: у CEO новое сообщение. Ждут ответа: ${waiting}.`, anchor);
+        if (round >= max) return this.notice(notices.handoffLimit(max, waiting), anchor);
+        if (this.deps.hasQueued()) return this.notice(notices.handoffDeferred(waiting), anchor);
         replies = await Promise.all([...asks].map(([agent, from]) => this.handoff(agent, from, prefs)));
       }
     } finally {
@@ -707,8 +681,9 @@ export class Orchestrator {
       }
     }
     if (skipped.size) {
-      const list = [...skipped].map((a) => `${AGENT_LABELS[a]}${busy.has(a) ? ' (занят)' : ''}`).join(', ');
-      this.notice(`Не передаю ход: ${list} — недоступны сейчас.`, replies[replies.length - 1].id);
+      const notices = t().notices;
+      const list = [...skipped].map((a) => `${AGENT_LABELS[a]}${busy.has(a) ? notices.busy : ''}`).join(', ');
+      this.notice(notices.noHandoff(list), replies[replies.length - 1].id);
     }
     return asks;
   }
@@ -720,14 +695,14 @@ export class Orchestrator {
     const floor = highestTier([this.lastTier(agent, last + 1), ...from.map((m) => m.route?.tier)]);
     const asked = from.map((m) => addressedTo(messageText(m), agent)).join('\n\n');
     const route = this.deps.router.forAgent(agent, asked, ctx, undefined, floor);
-    route.reason = `по просьбе ${senders(from)}`;
+    route.reason = t().reasons.askedBy(senders(from));
     const prompt = handoffTask(from);
     this.deps.log.info(`handoff: ${from.map((m) => m.agent).join(', ')} → ${agent} (${route.tier})`);
     return this.dispatch({
       route,
       kind: 'answer',
       replyTo: from[0].id,
-      subtitle: `по просьбе ${senders(from)}`,
+      subtitle: route.reason,
       contextUntil: last,
       seenAfter: last,
       excludeIds: from.map((m) => m.id),
@@ -867,7 +842,7 @@ export class Orchestrator {
       lines.unshift(entry);
     }
     if (!lines.length) return '';
-    return ['Новые сообщения в командном чате с твоего последнего ответа:', '', ...lines].join('\n');
+    return [prompts().newMessages, '', ...lines].join('\n');
   }
 
   private routeContext(prefs: Prefs, beforeIdx: number): RouteContext {
@@ -938,32 +913,17 @@ export class Orchestrator {
 
 export function teamBrief(agent: AgentId, cwd: string): string {
   const others = AGENT_IDS.filter((a) => a !== agent).map((a) => AGENT_LABELS[a]).join(', ');
-  return [
-    `Ты — ${AGENT_LABELS[agent]}, участник команды ИИ-агентов, работающей над проектом пользователя. Пользователь — CEO: ставит задачи и принимает решения.`,
-    `Коллеги: ${others}. Их сообщения приходят тебе с пометками вида [Codex]: …, сообщения CEO — [CEO]: ….`,
-    'Правила:',
-    '- Отвечай на языке CEO (обычно русский), по делу, в markdown.',
-    '- Ссылаясь на файлы, пиши путь от корня проекта в обратных кавычках, например `src/app.ts:42`.',
-    '- Если задача неясна или изменение рискованно — коротко уточни у CEO, прежде чем делать большие правки.',
-    '- Не повторяй сказанное коллегами: опирайся на их ответы и спорь по существу.',
-    '- Нужен коллега прямо сейчас — ответить, проверить, сделать свою часть — обратись к нему через @: @claude, @codex, @gemini или @all. Он получит твоё сообщение и ответит следом. Просто ссылаясь на коллегу, пиши имя без @. В брейншторме и в задачах из плана лида @ ход не передаёт: там очерёдность задаёт система.',
-    '- Если твоей части нужен результат коллеги, который ещё работает, не жди его в фоне: так и скажи и закончи ответ. Закончив то, чего ждут коллеги, позови их через @.',
-    `- Рабочая папка проекта: ${cwd}`,
-  ].join('\n');
+  return prompts().teamBrief(AGENT_LABELS[agent], others, cwd);
 }
 
 function ceoTask(text: string, parallel: boolean): string {
-  const note = parallel ? '\n(CEO адресовал это сообщение нескольким агентам — они отвечают параллельно.)' : '';
-  return `[CEO]: ${text}${note}`;
+  return `[CEO]: ${text}${parallel ? prompts().parallelNote : ''}`;
 }
 
 function handoffTask(from: ChatMessage[]): string {
   const one = from.length === 1;
-  return [
-    one ? `${AGENT_LABELS[from[0].agent!]} обратился к тебе в командном чате:` : 'Коллеги обратились к тебе в командном чате:',
-    ...from.map((m) => `${one ? '' : `### ${AGENT_LABELS[m.agent!]}\n`}"""\n${truncate(messageText(m), 8000)}\n"""`),
-    'Ответь на то, что адресовано тебе: на вопрос — ответом, на просьбу — делом. Если это уже сделано или обращение не по адресу — коротко скажи об этом.',
-  ].join('\n\n');
+  const quoted = from.map((m) => `${one ? '' : `### ${AGENT_LABELS[m.agent!]}\n`}"""\n${truncate(messageText(m), 8000)}\n"""`).join('\n\n');
+  return prompts().handoff(one ? AGENT_LABELS[from[0].agent!] : undefined, quoted);
 }
 
 function senders(from: ChatMessage[]): string {
@@ -982,118 +942,22 @@ function addressedTo(text: string, agent: AgentId): string {
 }
 
 function reviewTask(target: ChatMessage, question?: ChatMessage): string {
-  const author = AGENT_LABELS[target.agent!];
   const tools = target.parts
     .filter((p): p is ToolPart => p.type === 'tool')
     .slice(0, 30)
     .map((p) => `- ${p.name}${p.detail ? `: ${p.detail}` : ''}`);
-  return [
-    `CEO просит тебя проверить работу коллеги ${author}.`,
-    question ? `Задача, которую он решал:\n"""\n${truncate(messageText(question), 4000)}\n"""` : '',
-    `Ответ ${author}:\n"""\n${truncate(messageText(target), 8000)}\n"""`,
-    tools.length ? `Его действия:\n${tools.join('\n')}` : '',
-    'Если он менял файлы — посмотри изменения (git diff, чтение файлов). Сам ничего не меняй.',
-    'Первой строкой — вердикт: ✅ Принять / ⚠️ Есть замечания / ❌ Переделать. Затем конкретные замечания списком: файл:строка, что не так, как исправить. Без воды.',
-  ]
-    .filter(Boolean)
-    .join('\n\n');
+  return prompts().review(
+    AGENT_LABELS[target.agent!],
+    question ? truncate(messageText(question), 4000) : undefined,
+    truncate(messageText(target), 8000),
+    tools.join('\n'),
+  );
 }
-
-function planRules(roster: string): string {
-  return [
-    'Команда:',
-    roster,
-    '',
-    'Правила плана:',
-    '- При необходимости изучи проект (только чтение) и учти договорённости из чата.',
-    '- 1–6 крупных задач. Назначай по сильным сторонам и задействуй всю команду, где это оправдано: у каждого своя подписка, не загружай одного. Себя назначай на общих основаниях.',
-    '- Задачи разных агентов идут параллельно в одной рабочей папке, поэтому у каждой своя зона (папки/файлы), и зоны не пересекаются. Если задаче нужен результат другой — укажи её в dependsOn.',
-    '- Каждая задача — самодостаточное ТЗ: исполнитель видит только недавнюю часть чата и не видит твоих мыслей. Что сделать, где, критерии готовности, как проверить; ссылайся на нужные файлы и документы проекта.',
-    '- Отдельную задачу на интеграцию и проверку не добавляй: после всех задач ты сам проверишь результат.',
-    '',
-    'Формат блока плана:',
-    '```team-plan',
-    '{"tasks": [{"id": "t1", "title": "Короткое название", "agent": "codex", "domain": "code", "tier": "standard", "scope": "backend/", "dependsOn": [], "task": "Подробное ТЗ"}]}',
-    '```',
-    `agent — одно из имён в кавычках выше; domain: ${DOMAINS.join(', ')}; tier: trivial | standard | hard | critical — не завышай, лимиты ограничены.`,
-  ].join('\n');
-}
-
-function leadTask(text: string, roster: string): string {
-  return [
-    `[CEO]: ${text}`,
-    '',
-    'CEO поручил это всей команде. Ты — лид: составь план и распредели работу. Сам ничего не меняй и не начинай выполнять — исполнители начнут сразу после твоего ответа.',
-    'Если без ответа CEO начинать нельзя — задай вопросы и верни пустой список задач.',
-    '',
-    planRules(roster),
-    '',
-    'Ответ: сначала для CEO коротко (до 12 строк) — подход, кто за что отвечает и 2–5 критериев готовности цели (по ним ты будешь проверять результат). В самом конце — блок team-plan.',
-  ].join('\n');
-}
-
-function nextPlanTask(goal: string, iteration: number, roster: string): string {
-  return [
-    `CEO просит продолжить работу над целью:\n"""\n${truncate(goal, 4000)}\n"""`,
-    `Это итерация ${iteration}. Учти отчёты исполнителей и свою проверку выше: что сделано, что не получилось, что осталось.`,
-    'Составь план следующей итерации — только то, что приближает к цели. Сам ничего не меняй.',
-    '',
-    planRules(roster),
-    '',
-    'Ответ: сначала для CEO коротко — что делаем в этой итерации и кто. В самом конце — блок team-plan.',
-  ].join('\n');
-}
-
-function taskBrief(t: PlanTask, n: number, total: number, lead: AgentId): string {
-  return [
-    `[Задача ${n}/${total} от лида ${AGENT_LABELS[lead]}]: ${t.title}`,
-    '',
-    t.task,
-    '',
-    t.scope ? `Твоя зона: ${t.scope}.` : '',
-    'Коллеги параллельно выполняют другие задачи плана в этой же папке: не меняй файлы вне своей зоны без крайней необходимости (если пришлось — скажи в отчёте). Не делай git commit и push — это решает CEO.',
-    'Если нужна помощь коллеги — напиши об этом в отчёте: лид учтёт при проверке.',
-    'В конце — короткий отчёт: что сделано, какие файлы изменены, как проверить, что осталось или требует решения CEO.',
-  ]
-    .filter(Boolean)
-    .join('\n');
-}
-
-const TASK_STATUS_LABELS: Record<PlanTask['status'], string> = {
-  pending: 'не начата',
-  running: 'в работе',
-  done: 'готово',
-  error: 'ошибка',
-  stopped: 'остановлена',
-  skipped: 'пропущена (не выполнена зависимость)',
-};
 
 function reportTask(goal: string, tasks: PlanTask[], iteration: number, roster?: string): string {
-  return [
-    `Итерация ${iteration} завершена. Цель CEO:\n"""\n${truncate(goal, 4000)}\n"""`,
-    'Статусы задач:',
-    ...tasks.map((t) => `- ${t.id} · ${AGENT_LABELS[t.agent]} · «${t.title}» — ${TASK_STATUS_LABELS[t.status]}`),
-    'Отчёты исполнителей — выше в чате.',
-    '',
-    '1. Проверь результат: посмотри изменения, запусти сборку и тесты, если они есть. Мелкие нестыковки исправь сам, крупные не переделывай — опиши. Коммит — только если CEO об этом просил.',
-    '2. Отчёт для CEO: что сделано и кем, что проверено, проблемы.',
-    '3. Оцени по критериям готовности из плана, достигнута ли цель. Не объявляй её достигнутой, пока не проверил.',
-    roster
-      ? [
-          '4. Если цель не достигнута и решение CEO не требуется — составь план следующей итерации: исправления, недоделки, следующий шаг к цели. Команда продолжит без CEO.',
-          '',
-          planRules(roster),
-        ].join('\n')
-      : '',
-    '',
-    'В самом конце ответа — блок вердикта:',
-    '```team-status',
-    '{"status": "continue", "reason": "одна фраза"}',
-    '```',
-    'status: done — цель достигнута; continue — нужна ещё итерация; blocked — без ответа или решения CEO дальше нельзя (вопросы — в отчёте).',
-  ]
-    .filter(Boolean)
-    .join('\n');
+  const p = prompts();
+  const lines = tasks.map((task) => p.taskLine(task.id, AGENT_LABELS[task.agent], task.title, p.taskStatus[task.status]));
+  return p.report(truncate(goal, 4000), iteration, lines.join('\n'), roster);
 }
 
 function taskStatus(m: ChatMessage): PlanTask['status'] {
@@ -1120,29 +984,32 @@ function clampTier(tier: Tier, min: Tier, max: Tier): Tier {
 }
 
 function formatForContext(m: ChatMessage): string {
+  const c = prompts().context;
+  const label = AGENT_LABELS[m.agent!];
   const who =
     m.role === 'user'
       ? 'CEO'
       : m.kind === 'synthesis'
-        ? `${AGENT_LABELS[m.agent!]} — сводка модератора`
+        ? c.synthesis(label)
         : m.kind === 'plan'
-          ? `${AGENT_LABELS[m.agent!]} — план команды`
+          ? c.plan(label)
           : m.subtitle
-            ? `${AGENT_LABELS[m.agent!]} — задача ${m.subtitle}`
-            : AGENT_LABELS[m.agent!];
+            ? c.task(label, m.subtitle)
+            : label;
   const text = m.kind === 'plan' ? planForContext(m) : messageText(m);
   const tools = m.parts.filter((p): p is ToolPart => p.type === 'tool');
   const edits = tools.filter((p) => /edit|write/i.test(p.name) && p.detail).map((p) => p.detail);
-  const actions = edits.length ? `\n(менял файлы: ${[...new Set(edits)].slice(0, 12).join(', ')})` : '';
+  const actions = edits.length ? c.edited([...new Set(edits)].slice(0, 12).join(', ')) : '';
   if (!text && !actions) return '';
-  const body = text.length > PER_MESSAGE_CHARS ? `${text.slice(0, PER_MESSAGE_CHARS)}\n…[обрезано]` : text;
+  const body = text.length > PER_MESSAGE_CHARS ? `${text.slice(0, PER_MESSAGE_CHARS)}${c.truncated}` : text;
   return `[${who}]: ${body}${actions}\n`;
 }
 
 function planForContext(m: ChatMessage): string {
   const prose = stripPlanBlock(messageText(m));
   if (!m.plan?.length) return prose;
-  return [prose, '', 'Задачи:', ...m.plan.map((t) => `- ${t.id} → ${AGENT_LABELS[t.agent]}: ${t.title}${t.scope ? ` (зона: ${t.scope})` : ''}`)].join('\n');
+  const c = prompts().context;
+  return [prose, '', c.tasks, ...m.plan.map((t) => `- ${t.id} → ${AGENT_LABELS[t.agent]}: ${t.title}${t.scope ? c.scope(t.scope) : ''}`)].join('\n');
 }
 
 function errorText(e: unknown): string {

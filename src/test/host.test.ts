@@ -33,6 +33,8 @@ function startHost(settings: Record<string, unknown> = {}) {
     'harness.agents.codex.path': fakeCli('codex-stream.jsonl'),
     'harness.agents.gemini.path': fakeCli('gemini-stream.jsonl'),
     'harness.routing.classifier': 'heuristic',
+    // The flows below check Russian texts; the English UI has its own test.
+    'harness.language': 'ru',
     ...settings,
   };
   const context: any = {
@@ -134,6 +136,26 @@ test('extension host: chat, mentions, brainstorm, review, persistence', async ()
   webview.send({ type: 'openChat', id: conv.id });
   await until(() => (last()?.conversation.id === conv.id ? last() : undefined), 'reopened chat');
 
+  dispose();
+});
+
+test('english UI: the view state, page language, handoff prompt and labels follow harness.language', async () => {
+  const prefs = { mode: 'auto', profile: 'balanced', autonomy: 'readonly' };
+  const { last, webview, dispose } = startHost({ 'harness.language': 'en', 'harness.agents.codex.path': fakeCli('codex-handoff.jsonl') });
+  assert.match(webview.html, /<html lang="en">/);
+  webview.send({ type: 'ready' });
+  const ready = await until(() => (last()?.agents.every((a) => a.installed) ? last() : undefined), 'agents detected');
+  assert.equal(ready.locale, 'en');
+
+  webview.send({ type: 'send', text: '@codex fix the parser', prefs });
+  const s = await until(() => {
+    const st = last();
+    return st && !st.running && st.conversation.messages.filter((m) => m.role !== 'system').length >= 3 ? st : undefined;
+  }, 'codex → claude');
+  const [, codex, claude] = s.conversation.messages.filter((m) => m.role !== 'system');
+  assert.equal(codex.route?.reason, 'by mention');
+  assert.equal(claude.subtitle, 'asked by Codex');
+  assert.match(claude.prompt ?? '', /^Codex addressed you in the team chat:[\s\S]*@Claude, проверь[\s\S]*Respond to what is addressed to you/);
   dispose();
 });
 

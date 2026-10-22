@@ -1,3 +1,5 @@
+import type { Locale } from '../i18n';
+
 export const AGENT_IDS = ['claude', 'codex', 'gemini'] as const;
 export type AgentId = (typeof AGENT_IDS)[number];
 
@@ -233,6 +235,8 @@ export interface ViewState {
   workspace?: string;
   /** False in VS Code's Restricted Mode: agents must not run until the folder is trusted. */
   trusted: boolean;
+  /** UI language, resolved by the host. */
+  locale: Locale;
 }
 
 export function messageText(m: ChatMessage): string {

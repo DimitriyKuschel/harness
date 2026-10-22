@@ -1,3 +1,5 @@
+import { t } from '../i18n';
+import { prompts } from './prompts';
 import {
   AGENT_LABELS,
   DOMAINS,
@@ -70,7 +72,7 @@ export class Router {
   async route(text: string, ctx: RouteContext, signal: AbortSignal): Promise<{ route: RouteInfo; team: boolean }> {
     const a = await this.assess(text, ctx, signal);
     const agent = this.pickAgent(a, ctx);
-    if (!agent) throw new Error('Нет доступных агентов: проверьте установку CLI и настройки Harness.');
+    if (!agent) throw new Error(t().notices.routerNoAgents);
     return { route: this.finish(agent, a, ctx, a.via), team: !!a.team && ctx.available.length >= 2 };
   }
 
@@ -80,12 +82,12 @@ export class Router {
    */
   forAgent(agent: AgentId, text: string, ctx: RouteContext, tierOverride?: Tier, floor?: Tier): RouteInfo {
     const a = heuristicAssessment(text);
-    if (tierOverride) return this.finish(agent, { ...a, tier: tierOverride, reason: 'выбрано вручную' }, ctx, 'mention', true);
+    if (tierOverride) return this.finish(agent, { ...a, tier: tierOverride, reason: t().reasons.manual }, ctx, 'mention', true);
     const tier = shiftTier(a.tier, ctx.profile);
     if (floor && !isSmallTalk(text) && TIERS.indexOf(floor) > TIERS.indexOf(tier)) {
-      return this.finish(agent, { ...a, tier: floor, reason: 'продолжение работы агента' }, ctx, 'mention', true);
+      return this.finish(agent, { ...a, tier: floor, reason: t().reasons.continued }, ctx, 'mention', true);
     }
-    return this.finish(agent, { ...a, tier, reason: 'по упоминанию' }, ctx, 'mention', true);
+    return this.finish(agent, { ...a, tier, reason: t().reasons.mention }, ctx, 'mention', true);
   }
 
   finish(agent: AgentId, a: Assessment, ctx: RouteContext, via: RouteInfo['via'], exactTier = false): RouteInfo {
@@ -157,13 +159,15 @@ export class Router {
 
   /** Team roster for the lead's planning prompt: strengths and spent quota. */
   roster(ctx: Pick<RouteContext, 'available' | 'limits'>): string {
-    const strengths = this.config().strengths;
+    const strengths = this.strengths();
     return ctx.available
-      .map((id) => {
-        const used = Math.round(effectiveUsage(ctx.limits[id]));
-        return `- ${AGENT_LABELS[id]} (agent: "${id}"): ${strengths[id] ?? ''} Лимит подписки израсходован на ${used}%.`;
-      })
+      .map((id) => prompts().rosterLine(AGENT_LABELS[id], id, strengths[id], Math.round(effectiveUsage(ctx.limits[id]))))
       .join('\n');
+  }
+
+  /** `harness.strengths` over the built-in descriptions in the UI language. */
+  private strengths(): Record<AgentId, string> {
+    return { ...prompts().strengths, ...this.config().strengths };
   }
 
   /** The cheapest healthy agent runs the classifier. */
@@ -173,30 +177,9 @@ export class Router {
   }
 
   private classifierPrompt(text: string, ctx: RouteContext): string {
-    const strengths = this.config().strengths;
-    const team = ctx.available.map((id) => `- ${id} (${AGENT_LABELS[id]}): ${strengths[id] ?? ''}`).join('\n');
-    return [
-      'Ты — диспетчер команды ИИ-агентов. Оцени задачу от CEO: сложность, область, нужно ли менять проект и нужна ли вся команда. Исполнителя выберет система.',
-      '',
-      'Команда:',
-      team,
-      '',
-      'Уровни сложности (tier):',
-      '- trivial: короткий ответ, факт, мелкая правка в одном месте, переформулировка',
-      '- standard: обычная задача — фича или функция среднего размера, разбор кода, текст, план',
-      '- hard: многошаговая работа по многим файлам, архитектура, сложный баг, глубокий анализ',
-      '- critical: высокая цена ошибки — безопасность, миграции данных, ключевые архитектурные решения',
-      '',
-      `Области (domain): ${DOMAINS.join(', ')}.`,
-      'needsChanges: true, если нужно менять файлы или запускать команды в проекте.',
-      'team: true, если работа крупная и делится на части для разных специалистов (например бэкенд + фронтенд + дизайн), или CEO просит распределить работу/роли между агентами. Вопрос, обсуждение или задача для одного исполнителя — false.',
-      'Не завышай сложность: лимиты подписок ограничены.',
-      '',
-      ctx.recent ? `Последние сообщения в чате:\n${ctx.recent}\n` : '',
-      `Задача CEO:\n"""\n${text.slice(0, 6000)}\n"""`,
-      '',
-      'reason — до 12 слов, по-русски, о сути задачи (не называй агентов).',
-    ].join('\n');
+    const strengths = this.strengths();
+    const team = ctx.available.map((id) => `- ${id} (${AGENT_LABELS[id]}): ${strengths[id]}`).join('\n');
+    return prompts().classifier(team, ctx.recent, text.slice(0, 6000));
   }
 }
 
@@ -237,26 +220,59 @@ const rx = (words: string[]) => new RegExp(`(?<![\\p{L}\\p{N}])(?:${words.join('
 const CHANGE = rx([
   'сделай', 'добавь', 'исправь', 'почини', 'реализуй', 'напиши', 'создай', 'удали', 'переименуй', 'обнови', 'отрефактор',
   'внедри', 'настрой', 'перепиши', 'сгенерируй', 'подключи', 'implement', 'add', 'fix', 'create', 'write', 'refactor',
-  'update', 'remove', 'rename', 'build', 'generate',
+  'update', 'remove', 'rename', 'build', 'generate', 'make', 'change', 'delete', 'edit', 'rewrite', 'replace', 'configure',
+  'set up', 'install', 'integrate', 'convert',
 ]);
 const HARD = rx([
   'архитектур', 'спроектир', 'рефактор', 'миграц', 'оптимизир', 'безопасн', 'уязвим', 'производительн', 'масштабир',
-  'с нуля', 'весь проект', 'всего проекта', 'race', 'concurren', 'architecture', 'security', 'performance', 'migrat',
+  'с нуля', 'весь проект', 'всего проекта', 'race', 'concurren', 'architect', 'security', 'performance', 'migrat',
+  'refactor', 'optimi', 'vulnerab', 'scalab', 'from scratch', 'whole project', 'entire project', 'whole codebase', 'entire codebase',
 ]);
 // "не критично" / "not critical" says the opposite.
 const CRITICAL = /(?<![\p{L}\p{N}])(?<!(?:не|not)\s+)(?:критич|critical)/iu;
-const TEAM = rx(['распредели', 'распределите', 'раздай', 'раздайте', 'всей командой', 'кто за что', 'по ролям', 'split the work']);
-const SMALL_TALK = rx(['привет', 'спасибо', 'ок', 'окей', 'понял', 'супер', 'отлично', 'ясно', 'hi', 'hello', 'thanks', 'ok']);
+const TEAM = rx([
+  'распредели', 'распределите', 'раздай', 'раздайте', 'всей командой', 'кто за что', 'по ролям', 'split the work', 'split up the work',
+  'divide the work', 'distribute the work', 'whole team', 'entire team', 'among yourselves', 'between yourselves', 'who does what',
+]);
+const SMALL_TALK = rx([
+  'привет', 'спасибо', 'ок', 'окей', 'понял', 'супер', 'отлично', 'ясно', 'hi', 'hello', 'hey', 'thanks', 'thank you', 'thx', 'ok',
+  'got it', 'understood', 'great', 'awesome', 'perfect', 'cool',
+]);
 
 const DOMAIN_WORDS: [Domain, RegExp][] = [
-  ['design', rx(['дизайн', 'график', 'иконк', 'логотип', 'изображен', 'картинк', 'иллюстрац', 'баннер', '3d', 'blender', 'svg', 'figma', 'палитр', 'макет'])],
-  ['marketing', rx(['маркетинг', 'seo', 'сео', 'реклам', 'продвижен', 'воронк', 'аудитори', 'позиционир', 'бренд', 'контент-план', 'smm', 'конверси'])],
-  ['research', rx(['исследу', 'исследован', 'изучи', 'сравни', 'рынок', 'рынка', 'конкурент', 'источник', 'research', 'найди информац'])],
-  ['data', rx(['данных', 'данные', 'sql', 'аналитик', 'метрик', 'таблиц', 'csv', 'dataset', 'статистик'])],
-  ['frontend', rx(['ui', 'ux', 'интерфейс', 'вёрстк', 'верстк', 'css', 'react', 'vue', 'компонент', 'кнопк', 'страниц', 'tailwind', 'html', 'layout'])],
-  ['writing', rx(['текст', 'стать', 'пост', 'документац', 'readme', 'перевед', 'переведи', 'письмо', 'описани'])],
-  ['planning', rx(['план', 'роадмап', 'roadmap', 'этап', 'сроки', 'декомпоз', 'спецификац', 'требован', 'приоритет'])],
-  ['code', rx(['код', 'функци', 'класс', 'баг', 'ошибк', 'тест', 'api', 'endpoint', 'бэкенд', 'backend', 'сервер', 'компил', 'сборк', 'deploy', 'docker', 'скрипт', 'репозитор', 'git'])],
+  ['design', rx([
+    'дизайн', 'график', 'иконк', 'логотип', 'изображен', 'картинк', 'иллюстрац', 'баннер', '3d', 'blender', 'svg', 'figma', 'палитр', 'макет',
+    'graphic', 'icon', 'logo', 'image', 'picture', 'illustrat', 'banner', 'palette', 'mockup', 'mock-up', 'visual',
+  ])],
+  ['marketing', rx([
+    'маркетинг', 'seo', 'сео', 'реклам', 'продвижен', 'воронк', 'аудитори', 'позиционир', 'бренд', 'контент-план', 'smm', 'конверси',
+    'marketing', 'advertis', 'promotion', 'funnel', 'audience', 'positioning', 'brand', 'content plan', 'conversion', 'campaign', 'go-to-market',
+  ])],
+  ['research', rx([
+    'исследу', 'исследован', 'изучи', 'сравни', 'рынок', 'рынка', 'конкурент', 'источник', 'research', 'найди информац',
+    'investigat', 'compare', 'comparison', 'market research', 'competitor', 'sources', 'find information', 'look up',
+  ])],
+  ['data', rx([
+    'данных', 'данные', 'sql', 'аналитик', 'метрик', 'таблиц', 'csv', 'dataset', 'статистик',
+    'data', 'analytics', 'metric', 'table', 'statistic', 'spreadsheet', 'pandas', 'dashboard',
+  ])],
+  ['frontend', rx([
+    'ui', 'ux', 'интерфейс', 'вёрстк', 'верстк', 'css', 'react', 'vue', 'компонент', 'кнопк', 'страниц', 'tailwind', 'html', 'layout',
+    'interface', 'component', 'button', 'page', 'frontend', 'front-end', 'responsive', 'svelte', 'angular', 'nuxt',
+  ])],
+  ['writing', rx([
+    'текст', 'стать', 'пост', 'документац', 'readme', 'перевед', 'переведи', 'письмо', 'описани',
+    'text', 'article', 'blog', 'documentation', 'docs', 'translat', 'letter', 'email', 'description', 'essay', 'copywriting',
+  ])],
+  ['planning', rx([
+    'план', 'роадмап', 'roadmap', 'этап', 'сроки', 'декомпоз', 'спецификац', 'требован', 'приоритет',
+    'plan', 'milestone', 'deadline', 'timeline', 'decompos', 'specification', 'requirement', 'priorit', 'estimat',
+  ])],
+  ['code', rx([
+    'код', 'функци', 'класс', 'баг', 'ошибк', 'тест', 'api', 'endpoint', 'бэкенд', 'backend', 'сервер', 'компил', 'сборк', 'deploy', 'docker',
+    'скрипт', 'репозитор', 'git', 'code', 'function', 'class', 'bug', 'error', 'test', 'server', 'compil', 'build', 'script', 'repo', 'debug',
+    'exception', 'crash', 'typescript', 'python', 'golang', 'rust', 'java',
+  ])],
 ];
 
 export function isSmallTalk(text: string): boolean {
@@ -265,19 +281,19 @@ export function isSmallTalk(text: string): boolean {
 }
 
 export function heuristicAssessment(text: string): Assessment {
-  const t = text.trim();
-  const needsChanges = CHANGE.test(t);
-  const hard = HARD.test(t) || t.length > 1500;
-  const tier: Tier = CRITICAL.test(t) ? 'critical' : hard ? 'hard' : t.length < 80 && !needsChanges ? 'trivial' : 'standard';
+  const trimmed = text.trim();
+  const needsChanges = CHANGE.test(trimmed);
+  const hard = HARD.test(trimmed) || trimmed.length > 1500;
+  const tier: Tier = CRITICAL.test(trimmed) ? 'critical' : hard ? 'hard' : trimmed.length < 80 && !needsChanges ? 'trivial' : 'standard';
 
   let domain: Domain = 'other';
   let best = 0;
   for (const [d, re] of DOMAIN_WORDS) {
-    const hits = t.match(new RegExp(re.source, 'giu'))?.length ?? 0;
+    const hits = trimmed.match(new RegExp(re.source, 'giu'))?.length ?? 0;
     if (hits > best) {
       best = hits;
       domain = d;
     }
   }
-  return { tier, domain, needsChanges, team: TEAM.test(t), reason: 'эвристика по тексту', via: 'heuristic' };
+  return { tier, domain, needsChanges, team: TEAM.test(trimmed), reason: t().reasons.heuristic, via: 'heuristic' };
 }

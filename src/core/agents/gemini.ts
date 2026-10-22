@@ -1,3 +1,5 @@
+import { t } from '../../i18n';
+import { prompts } from '../prompts';
 import type { AgentAdapter, AgentEvent, AgentLimits, AgentStatus, LimitWindow, RunOutcome, RunRequest, Usage } from '../types';
 import { type Logger, nullLogger, resolveBinary, runJsonl, runText, truncate, tryParseJson } from '../proc';
 import { shortPath } from './claude';
@@ -5,10 +7,6 @@ import { shortPath } from './claude';
 /** Linux caps a single argv string at 128 KiB, and `agy -p` only takes the prompt as an argument. */
 const MAX_PROMPT_BYTES = 120_000;
 const EFFORT_IN_SLUG = /-(low|medium|high)$/;
-// Read-only = plan mode without auto-approval: shell commands are denied (--sandbox does not stop
-// `echo > file` in the workspace). Plan mode also nudges the agent towards plan artifacts, hence the hint.
-const READONLY_HINT =
-  '\n\n(Режим только чтения: shell-команды запрещены — изучай проект инструментами просмотра файлов, списка папок и поиска. Отвечай прямо здесь, текстом в чате; не создавай планы, артефакты и файлы.)';
 
 /**
  * Drives the official Antigravity CLI: `agy -p <prompt> --output-format stream-json`.
@@ -24,7 +22,7 @@ export class GeminiAdapter implements AgentAdapter {
 
   async detect(): Promise<AgentStatus> {
     const path = await resolveBinary(this.binary());
-    if (!path) return { id: this.id, installed: false, error: 'Antigravity CLI (agy) не установлен' };
+    if (!path) return { id: this.id, installed: false, error: t().cli.agyNotInstalled };
     try {
       const version = (await runText(path, ['--version'])).split(/\s/).pop();
       return { id: this.id, installed: true, version, path };
@@ -37,7 +35,9 @@ export class GeminiAdapter implements AgentAdapter {
     const path = (await resolveBinary(this.binary())) ?? this.binary();
     const autonomy = req.ephemeral ? 'readonly' : req.autonomy;
     const brief = !req.sessionId && req.systemPrompt ? `${req.systemPrompt}\n\n---\n\n` : '';
-    const full = brief + req.prompt + (autonomy === 'readonly' ? READONLY_HINT : '');
+    // Read-only = plan mode without auto-approval: shell commands are denied (--sandbox does not stop
+    // `echo > file` in the workspace). Plan mode also nudges the agent towards plan artifacts, hence the hint.
+    const full = brief + req.prompt + (autonomy === 'readonly' ? prompts().readonlyGemini : '');
     const args = ['-p', fitPrompt(full), '--output-format', 'stream-json'];
     if (req.model) args.push('--model', req.model);
     // Antigravity model slugs carry the effort ("gemini-4-argon-high"); only pass --effort for bare slugs.
@@ -55,7 +55,7 @@ export class GeminiAdapter implements AgentAdapter {
     const s = new GeminiStream(req.cwd, onEvent);
     const res = await runJsonl(path, args, { cwd: req.cwd, signal, log: this.log }, (line) => s.handle(tryParseJson(line)));
     const sessionId = s.conversationId ?? req.sessionId;
-    if (res.aborted) return { ok: false, text: s.text, sessionId, error: 'остановлено' };
+    if (res.aborted) return { ok: false, text: s.text, sessionId, error: t().cli.stopped };
 
     const r = s.result;
     const response = typeof r?.response === 'string' ? r.response.trim() : '';
@@ -68,9 +68,9 @@ export class GeminiAdapter implements AgentAdapter {
     const reported = typeof r?.error === 'string' ? r.error : r?.error?.message;
     const error =
       reported ||
-      (denied.length ? `Нет разрешения на: ${denied.join(', ')} — попробуйте режим «Правки»` : '') ||
+      (denied.length ? t().cli.denied(denied.join(', ')) : '') ||
       stderr ||
-      (r ? `agy: ${r.status ?? 'пустой ответ'}` : `agy завершился с кодом ${res.code}`);
+      (r ? `agy: ${r.status ?? t().cli.emptyReply}` : t().cli.exited('agy', res.code));
     return { ok: false, text, sessionId, usage: s.usage, error };
   }
 
@@ -170,5 +170,5 @@ function fitPrompt(prompt: string): string {
   // Keep the end: the actual task is last, older chat context comes first.
   let tail = prompt.slice(-Math.floor(MAX_PROMPT_BYTES / 3));
   while (Buffer.byteLength(tail) > MAX_PROMPT_BYTES - 200) tail = tail.slice(1000);
-  return `…[начало контекста обрезано]\n${tail}`;
+  return `${prompts().contextCut}\n${tail}`;
 }

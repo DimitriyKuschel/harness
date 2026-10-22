@@ -19,6 +19,7 @@ import {
   type Prefs,
   type ViewState,
 } from '../core/types';
+import { locale, resolveLocale, setLocale, t } from '../i18n';
 import type { ToHost, ToWebview } from '../protocol';
 import { ConversationStore } from './store';
 import { renderHtml } from './html';
@@ -53,6 +54,7 @@ export class Controller implements vscode.Disposable {
   ) {
     const logger: Logger = { info: (m) => log.info(m), error: (m) => log.error(m) };
     const cfg = () => vscode.workspace.getConfiguration('harness');
+    applyLocale();
     this.adapters = {
       claude: new ClaudeAdapter(() => cfg().get('agents.claude.path') || 'claude', logger, () => cfg().get('agents.claude.chrome', false)),
       codex: new CodexAdapter(() => cfg().get('agents.codex.path') || 'codex', logger),
@@ -99,6 +101,7 @@ export class Controller implements vscode.Disposable {
     this.disposables.push(
       this.statusItem,
       vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration('harness.language')) applyLocale();
         if (e.affectsConfiguration('harness.agents')) void this.refreshAgents();
         else if (e.affectsConfiguration('harness')) this.scheduleEmit();
       }),
@@ -119,7 +122,7 @@ export class Controller implements vscode.Disposable {
     const results = await Promise.all(AGENT_IDS.map((id) => this.adapters[id].detect()));
     for (const s of results) {
       this.statuses[s.id] = s;
-      this.log.info(`${s.id}: ${s.installed ? `${s.version} (${s.path})` : `недоступен — ${s.error}`}`);
+      this.log.info(`${s.id}: ${s.installed ? `${s.version} (${s.path})` : `unavailable: ${s.error}`}`);
     }
     this.scheduleEmit();
   }
@@ -133,7 +136,7 @@ export class Controller implements vscode.Disposable {
         if (!adapter.readLimits || (!force && now - (this.limitsReadAt[id] ?? 0) < LIMITS_MIN_GAP_MS)) return;
         this.limitsReadAt[id] = now;
         const limits = await adapter.readLimits().catch((e) => {
-          this.log.error(`${id}: не удалось прочитать лимиты — ${String(e)}`);
+          this.log.error(`${id}: couldn't read limits: ${String(e)}`);
           return undefined;
         });
         if (limits) this.updateLimits(id, limits);
@@ -145,7 +148,7 @@ export class Controller implements vscode.Disposable {
 
   attach(webview: vscode.Webview): vscode.Disposable {
     webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'dist')] };
-    webview.html = renderHtml(webview, this.context.extensionUri);
+    webview.html = renderHtml(webview, this.context.extensionUri, locale());
     this.webviews.add(webview);
     const sub = webview.onDidReceiveMessage((m: ToHost) => this.handle(m).catch((e) => this.log.error(`handler: ${String(e)}`)));
     return new vscode.Disposable(() => {
@@ -196,7 +199,7 @@ export class Controller implements vscode.Disposable {
         return this.newChat();
       case 'openChat': {
         const conv = await this.store.load(m.id);
-        if (!conv) return void vscode.window.showWarningMessage('Чат не найден.');
+        if (!conv) return void vscode.window.showWarningMessage(t().host.chatNotFound);
         this.queue = [];
         this.orch.load(conv);
         return this.store.setLast(conv.id);
@@ -269,6 +272,7 @@ export class Controller implements vscode.Disposable {
       prefs: this.prefs,
       workspace: vscode.workspace.workspaceFolders?.[0]?.name,
       trusted: vscode.workspace.isTrusted,
+      locale: locale(),
     };
   }
 
@@ -320,7 +324,7 @@ export class Controller implements vscode.Disposable {
   private updateStatusItem(): void {
     const busy = [...this.orch.busyAgents()].map((a) => AGENT_LABELS[a]);
     this.statusItem.text = busy.length ? `$(sync~spin) ${busy.join(', ')}` : '$(organization) AI Team';
-    this.statusItem.tooltip = busy.length ? 'Команда работает — открыть чат' : 'Открыть чат команды';
+    this.statusItem.tooltip = busy.length ? t().host.statusBusy : t().host.statusIdle;
   }
 
   private async openFile(ref: string): Promise<void> {
@@ -334,7 +338,7 @@ export class Controller implements vscode.Disposable {
       const found = await vscode.workspace.findFiles(`**/${file.replace(/^\.?\//, '')}`, '**/node_modules/**', 1);
       uri = found[0];
     }
-    if (!uri) return void vscode.window.showWarningMessage(`Файл не найден: ${file}`);
+    if (!uri) return void vscode.window.showWarningMessage(t().host.fileNotFound(file));
     const selection = line !== undefined ? new vscode.Range(line, 0, line, 0) : undefined;
     await vscode.window.showTextDocument(uri, {
       preview: true,
@@ -351,6 +355,11 @@ export class Controller implements vscode.Disposable {
     void this.store.save(this.orch.conversation);
     for (const d of this.disposables) d.dispose();
   }
+}
+
+/** `harness.language`, or VS Code's display language when it is `auto`. */
+function applyLocale(): void {
+  setLocale(resolveLocale(vscode.workspace.getConfiguration('harness').get('language'), vscode.env.language));
 }
 
 async function exists(uri: vscode.Uri): Promise<boolean> {

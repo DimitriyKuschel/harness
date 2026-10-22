@@ -1,5 +1,7 @@
 import { homedir } from 'node:os';
 import { relative, isAbsolute } from 'node:path';
+import { t } from '../../i18n';
+import { prompts } from '../prompts';
 import type { AgentAdapter, AgentEvent, AgentLimits, AgentStatus, LimitWindow, RunOutcome, RunRequest, Usage } from '../types';
 import { type Logger, nullLogger, resolveBinary, runJsonl, runText, truncate, tryParseJson } from '../proc';
 
@@ -13,10 +15,7 @@ const READONLY_TOOLS = [
 ];
 
 // Allow rules match a whole command line, so `cd x && git diff` is denied even though `git diff` alone is allowed.
-const readonlyHint = (browser: boolean) =>
-  `\n\n(Режим только чтения: файлы не меняй. Shell-команды запускай по одной, без cd, && и |. Разрешены: ${READONLY_COMMANDS.join(', ')}.` +
-  (browser ? ' В браузере можно открывать и читать страницы, но не кликать и не вводить текст.' : '') +
-  ')';
+const readonlyHint = (browser: boolean) => prompts().readonlyClaude(READONLY_COMMANDS.join(', '), browser);
 
 /** Drives the official `claude` binary in print mode with stream-json output. */
 export class ClaudeAdapter implements AgentAdapter {
@@ -30,7 +29,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
   async detect(): Promise<AgentStatus> {
     const path = await resolveBinary(this.binary());
-    if (!path) return { id: this.id, installed: false, error: `«${this.binary()}» не найден` };
+    if (!path) return { id: this.id, installed: false, error: t().cli.notFound(this.binary()) };
     try {
       const version = (await runText(path, ['--version'])).split(/\s/)[0];
       return { id: this.id, installed: true, version, path };
@@ -68,7 +67,7 @@ export class ClaudeAdapter implements AgentAdapter {
       state.handle(tryParseJson(line)),
     );
 
-    if (res.aborted) return { ok: false, text: state.text, sessionId: state.sessionId, error: 'остановлено' };
+    if (res.aborted) return { ok: false, text: state.text, sessionId: state.sessionId, error: t().cli.stopped };
     const r = state.result;
     if (r && !r.is_error && r.subtype === 'success') {
       return {
@@ -82,7 +81,7 @@ export class ClaudeAdapter implements AgentAdapter {
     const error =
       (r && (typeof r.result === 'string' && r.is_error ? r.result : r.subtype)) ||
       lastLines(res.stderr) ||
-      `claude завершился с кодом ${res.code}`;
+      t().cli.exited('claude', res.code);
     return { ok: false, text: state.text, sessionId: state.sessionId, error, usage: state.usage };
   }
 
@@ -251,7 +250,7 @@ export function describeTool(name: string, input: any, cwd: string): string | un
     case 'Bash':
       return truncate(String(input.command ?? ''), 140);
     case 'Grep':
-      return truncate(`${input.pattern ?? ''}${input.path ? ` в ${rel(input.path)}` : ''}`, 140);
+      return truncate(input.path ? t().cli.inPath(input.pattern ?? '', rel(input.path)!) : String(input.pattern ?? ''), 140);
     case 'Glob':
       return truncate(String(input.pattern ?? ''), 140);
     case 'WebSearch':
@@ -262,7 +261,7 @@ export function describeTool(name: string, input: any, cwd: string): string | un
     case 'Agent':
       return truncate(String(input.description ?? input.prompt ?? ''), 140);
     case 'TodoWrite':
-      return Array.isArray(input.todos) ? `${input.todos.length} пунктов` : undefined;
+      return Array.isArray(input.todos) ? t().cli.items(input.todos.length) : undefined;
     default:
       return truncate(JSON.stringify(input), 140);
   }
