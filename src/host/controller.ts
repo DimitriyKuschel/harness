@@ -229,7 +229,7 @@ export class Controller implements vscode.Disposable {
       case 'copy':
         return vscode.env.clipboard.writeText(m.text);
       case 'command':
-        if (m.command === 'settings') await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:korsar.harness');
+        if (m.command === 'settings') await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:DimitriyKuschel.harness');
         if (m.command === 'refresh') await this.refreshAgents();
         if (m.command === 'limits' || m.command === 'refresh') await this.refreshLimits(this.available(), true);
         if (m.command === 'log') this.log.show();
