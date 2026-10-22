@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "auto-lead", "model": "claude-sonnet-5-5"}
+{"type": "assistant", "message": {"id": "msg_claude-autopilot-done", "content": [{"type": "text", "text": "Тесты зелёные, все критерии выполнены.\n\n```team-status\n{\"status\": \"done\", \"reason\": \"все критерии выполнены\"}\n```"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "result": "Тесты зелёные, все критерии выполнены.\n\n```team-status\n{\"status\": \"done\", \"reason\": \"все критерии выполнены\"}\n```", "session_id": "auto-lead", "usage": {"input_tokens": 10, "output_tokens": 20}}

@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Harness UI preview</title>
+  <link rel="stylesheet" href="themes.css" />
+  <link rel="stylesheet" href="../dist/webview.css" />
+</head>
+<!-- Dev-only: renders the webview outside VS Code. ?theme=light  ?empty=1  ?untrusted=1  ?team=1 -->
+<body>
+  <div id="root"></div>
+  <script src="sample.js"></script>
+  <script>
+    const params = new URLSearchParams(location.search);
+    document.body.className = params.get('theme') === 'light' ? 'vscode-light' : 'vscode-dark';
+    window.acquireVsCodeApi = () => ({
+      postMessage: (m) => {
+        console.log('[toHost]', JSON.stringify(m));
+        if (m.type === 'ready') setTimeout(() => window.postMessage({ type: 'state', state: sampleState(params.get('empty') === '1') }, '*'), 0);
+      },
+      getState: () => ({ draft: params.get('draft') || '' }),
+      setState: () => {},
+    });
+  </script>
+  <script src="../dist/webview.js"></script>
+</body>
+</html>

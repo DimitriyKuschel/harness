@@ -1,0 +1,307 @@
+{
+  "name": "harness",
+  "displayName": "Harness — AI Team",
+  "description": "Командный чат с Claude Code, Codex и Antigravity на ваших подписках: роутинг задач по моделям и effort, брейншторм, кросс-ревью.",
+  "version": "0.1.0",
+  "publisher": "korsar",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Агенты запускают команды и правят файлы в проекте, поэтому в ограниченном режиме чат открывается только для чтения истории.",
+      "restrictedConfigurations": [
+        "harness.agents.claude.path",
+        "harness.agents.codex.path",
+        "harness.agents.gemini.path"
+      ]
+    }
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "harness",
+          "title": "AI Team",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "harness": [
+        {
+          "type": "webview",
+          "id": "harness.chat",
+          "name": "Team"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "harness.newChat",
+        "title": "Новый чат",
+        "category": "Harness",
+        "icon": "$(add)"
+      },
+      {
+        "command": "harness.openInEditor",
+        "title": "Открыть чат во вкладке редактора",
+        "category": "Harness",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "harness.refreshAgents",
+        "title": "Проверить агентов",
+        "category": "Harness",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "harness.showLog",
+        "title": "Показать лог",
+        "category": "Harness",
+        "icon": "$(output)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "harness.newChat",
+          "when": "view == harness.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "harness.openInEditor",
+          "when": "view == harness.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "harness.refreshAgents",
+          "when": "view == harness.chat",
+          "group": "overflow@1"
+        },
+        {
+          "command": "harness.showLog",
+          "when": "view == harness.chat",
+          "group": "overflow@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Harness",
+      "properties": {
+        "harness.agents.claude.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Использовать Claude Code."
+        },
+        "harness.agents.claude.path": {
+          "type": "string",
+          "default": "claude",
+          "description": "Путь к бинарю claude (если его нет в PATH редактора)."
+        },
+        "harness.agents.claude.chrome": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Подключать Claude к Chrome через расширение Claude in Chrome (`--chrome`). Claude работает в вашем браузере со всеми входами в аккаунты. В режиме «Только чтение» он может только открывать и читать страницы, в «Правках» кликает и вводит текст после авто-проверки, в «Полном доступе» — без подтверждений."
+        },
+        "harness.agents.codex.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Использовать Codex CLI."
+        },
+        "harness.agents.codex.path": {
+          "type": "string",
+          "default": "codex",
+          "description": "Путь к бинарю codex."
+        },
+        "harness.agents.gemini.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Использовать Antigravity CLI (agy)."
+        },
+        "harness.agents.gemini.path": {
+          "type": "string",
+          "default": "agy",
+          "description": "Путь к бинарю agy."
+        },
+        "harness.team.maxIterations": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 30,
+          "markdownDescription": "Автопилот команды: сколько итераций «план → задачи → проверка» лид может запустить без CEO, пока цель не достигнута."
+        },
+        "harness.team.maxHandoffs": {
+          "type": "number",
+          "default": 6,
+          "minimum": 0,
+          "maximum": 30,
+          "markdownDescription": "Сколько раз подряд агенты могут передать ход друг другу через @упоминание (`@codex, проверь`), прежде чем Harness остановится и подождёт CEO. `0` — упоминания агентов ход не передают."
+        },
+        "harness.routing.classifier": {
+          "type": "string",
+          "enum": [
+            "llm",
+            "heuristic"
+          ],
+          "enumDescriptions": [
+            "Дешёвая модель (Haiku / Luna, low effort) оценивает сложность и область задачи; исполнителя выбирают правила.",
+            "Только эвристики по тексту, без лишних вызовов."
+          ],
+          "default": "llm",
+          "description": "Как роутер оценивает сложность и область задачи."
+        },
+        "harness.routing.affinity": {
+          "type": "object",
+          "description": "Порядок предпочтения агентов по областям задач. Первый — основной кандидат.",
+          "default": {
+            "code": [
+              "codex",
+              "claude",
+              "gemini"
+            ],
+            "frontend": [
+              "claude",
+              "gemini",
+              "codex"
+            ],
+            "design": [
+              "gemini",
+              "claude",
+              "codex"
+            ],
+            "research": [
+              "gemini",
+              "claude",
+              "codex"
+            ],
+            "writing": [
+              "claude",
+              "gemini",
+              "codex"
+            ],
+            "marketing": [
+              "claude",
+              "gemini",
+              "codex"
+            ],
+            "planning": [
+              "claude",
+              "codex",
+              "gemini"
+            ],
+            "data": [
+              "codex",
+              "claude",
+              "gemini"
+            ],
+            "other": [
+              "claude",
+              "codex",
+              "gemini"
+            ]
+          }
+        },
+        "harness.models": {
+          "type": "object",
+          "description": "Какая модель и effort используются для каждого уровня сложности. Пустая модель — модель агента по умолчанию.",
+          "default": {
+            "claude": {
+              "trivial": {
+                "model": "haiku",
+                "effort": "low"
+              },
+              "standard": {
+                "model": "sonnet",
+                "effort": "medium"
+              },
+              "hard": {
+                "model": "opus",
+                "effort": "high"
+              },
+              "critical": {
+                "model": "opus",
+                "effort": "xhigh"
+              }
+            },
+            "codex": {
+              "trivial": {
+                "model": "gpt-6-luna",
+                "effort": "low"
+              },
+              "standard": {
+                "model": "gpt-6.1-sol",
+                "effort": "medium"
+              },
+              "hard": {
+                "model": "gpt-6.1-sol",
+                "effort": "high"
+              },
+              "critical": {
+                "model": "gpt-6-astra",
+                "effort": "high"
+              }
+            },
+            "gemini": {
+              "trivial": {
+                "model": "gemini-3.8-flash-low",
+                "effort": "low"
+              },
+              "standard": {
+                "model": "gemini-4-argon-low",
+                "effort": "low"
+              },
+              "hard": {
+                "model": "gemini-4-argon-medium",
+                "effort": "medium"
+              },
+              "critical": {
+                "model": "gemini-4-argon-high",
+                "effort": "high"
+              }
+            }
+          }
+        },
+        "harness.strengths": {
+          "type": "object",
+          "description": "Чем силён каждый агент — подсказка для роутера.",
+          "default": {
+            "claude": "архитектура и сложные многошаговые задачи в кодовой базе, frontend/UI, тексты, маркетинг, планирование",
+            "codex": "реализация и отладка кода, бэкенд, алгоритмы, тесты, точечные правки, код-ревью",
+            "gemini": "мультимодальность (изображения, графика, дизайн), веб-исследования, большие объёмы контекста"
+          }
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "node esbuild.mjs --tests && node --test dist-test/",
+    "package": "npm run build -- --production && vsce package --no-dependencies --allow-missing-repository --skip-license -o harness.vsix"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "^14.1.2",
+    "@types/node": "^20.19.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/vscode": "~1.95.0",
+    "@vscode/codicons": "^0.0.40",
+    "@vscode/vsce": "^3.6.0",
+    "esbuild": "^0.25.0",
+    "markdown-it": "^14.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "~5.9.3"
+  }
+}

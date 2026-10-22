@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a1502b-9ce9-7d01-a3bb-7f8d2eb6efaa"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc 'ls media'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc 'ls media'","aggregated_output":"icon.svg\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"icon.svg"}}
+{"type":"turn.completed","usage":{"input_tokens":29062,"cached_input_tokens":28672,"cache_write_input_tokens":0,"output_tokens":40,"reasoning_output_tokens":0}}
