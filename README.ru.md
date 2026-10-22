@@ -25,13 +25,17 @@
 
 ## Установка
 
+Установите **Harness — AI Team** из панели Extensions: расширение есть в VS Code Marketplace и в Open VSX (Cursor, Windsurf, Antigravity, VSCodium).
+
+Нужны установленные и залогиненные CLI: `claude`, `codex`, `agy` (Antigravity CLI). Подойдёт любой набор: команда собирается из найденных агентов. Расширение ищет их в `PATH` и в `~/.local/bin`; путь можно задать в настройках `harness.agents.*.path`.
+
+Сборка из исходников:
+
 ```bash
 npm install
 npm run package          # → harness.vsix
 code --install-extension harness.vsix
 ```
-
-Нужны установленные и залогиненные CLI: `claude`, `codex`, `agy` (Antigravity CLI). Расширение ищет их в `PATH` и в `~/.local/bin`; путь можно задать в настройках `harness.agents.*.path`.
 
 Разработка: `npm run watch` и F5 (Extension Development Host). Превью UI без VS Code: `python3 -m http.server` в корне и откройте `preview/index.html` (`?theme=light`, `?empty=1`, `?team=1`, `?untrusted=1`, `?lang=en`).
 

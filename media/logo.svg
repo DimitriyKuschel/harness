@@ -1,0 +1,20 @@
+<!-- Marketplace icon source: render to media/icon.png (256×256). The activity bar uses media/icon.svg. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b2d35"/>
+      <stop offset="1" stop-color="#17181d"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="52" fill="url(#bg)"/>
+  <g stroke="#d9d6d0" stroke-width="10" stroke-linecap="round" opacity="0.85">
+    <line x1="128" y1="88" x2="70" y2="172"/>
+    <line x1="128" y1="88" x2="186" y2="172"/>
+    <line x1="70" y1="172" x2="186" y2="172"/>
+  </g>
+  <g stroke="#1f2026" stroke-width="8">
+    <circle cx="128" cy="88" r="30" fill="#d97757"/>
+    <circle cx="70" cy="172" r="30" fill="#10a37f"/>
+    <circle cx="186" cy="172" r="30" fill="#4c8df6"/>
+  </g>
+</svg>

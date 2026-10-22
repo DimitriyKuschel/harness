@@ -2,7 +2,10 @@
 !package.json
 !package.nls*.json
 !README.md
-!media/**
+!LICENSE
+!CHANGELOG.md
+!media/icon.svg
+!media/icon.png
 !dist/extension.js
 !dist/webview.js
 !dist/webview.css

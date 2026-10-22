@@ -8,8 +8,29 @@
     "type": "git",
     "url": "https://github.com/DimitriyKuschel/harness.git"
   },
+  "homepage": "https://github.com/DimitriyKuschel/harness#readme",
+  "bugs": {
+    "url": "https://github.com/DimitriyKuschel/harness/issues"
+  },
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#1f2026",
+    "theme": "dark"
+  },
+  "keywords": [
+    "claude",
+    "claude code",
+    "codex",
+    "gemini",
+    "antigravity",
+    "multi-agent",
+    "agents",
+    "ai team",
+    "brainstorm",
+    "code review"
+  ],
   "engines": {
     "vscode": "^1.95.0"
   },
@@ -303,7 +324,7 @@
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit -p .",
     "test": "node esbuild.mjs --tests && node --test dist-test/",
-    "package": "npm run build -- --production && vsce package --no-dependencies --skip-license -o harness.vsix"
+    "package": "npm run build -- --production && vsce package --no-dependencies -o harness.vsix"
   },
   "devDependencies": {
     "@types/markdown-it": "^14.1.2",
