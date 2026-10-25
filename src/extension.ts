@@ -25,6 +25,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('harness.openInEditor', () => c.openInEditor()),
     vscode.commands.registerCommand('harness.refreshAgents', () => c.refreshAgents().then(() => c.refreshLimits(undefined, true))),
     vscode.commands.registerCommand('harness.showLog', () => log.show()),
+    vscode.commands.registerCommand('harness.telegram.connect', () => c.telegram.connect()),
+    vscode.commands.registerCommand('harness.telegram.disconnect', () => c.telegram.disconnect()),
   );
 
   void c.init();

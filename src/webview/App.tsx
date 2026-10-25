@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { exhaustedUntil } from '../core/quota';
 import { AGENT_LABELS, type Mode, type Prefs, type ViewState } from '../core/types';
 import { setLocale, t } from '../i18n';
 import type { ToWebview } from '../protocol';
@@ -13,6 +14,10 @@ export function App() {
   const [state, setState] = useState<ViewState>();
   const [localPrefs, setLocalPrefs] = useState<Prefs>();
   const prefs = localPrefs ?? state?.prefs;
+  // The local copy only bridges the round trip: once the host's prefs change (here, in another view or from
+  // Telegram), they win, or the next message would send stale prefs back.
+  const hostPrefs = JSON.stringify(state?.prefs);
+  useEffect(() => setLocalPrefs(undefined), [hostPrefs]);
   const [atBottom, setAtBottom] = useState(true);
   const composer = useRef<ComposerHandle>(null);
   const scroller = useRef<HTMLDivElement>(null);
@@ -85,10 +90,11 @@ export function App() {
   setLocale(state.locale);
   const { messages } = state.conversation;
   const canReview = state.agents.filter((a) => a.installed && a.enabled).length >= 2;
+  const outOfQuota = new Set(state.agents.filter((a) => exhaustedUntil(a.limits)).map((a) => a.id));
 
   return (
     <div className="app">
-      <Header state={state} />
+      <Header state={state} prefs={prefs} onPrefs={updatePrefs} />
       <div className="messages" ref={scroller} onScroll={onScroll}>
         <div className="messages-inner">
           {messages.length === 0 ? (
@@ -103,7 +109,7 @@ export function App() {
               return (
                 <div key={m.id} id={`msg-${m.id}`}>
                   {startsRound && <RoundHeader kind={m.kind!} agents={roundAgents} />}
-                  <MessageView message={m} busy={state.running || !state.trusted} canReview={canReview} />
+                  <MessageView message={m} busy={state.running || !state.trusted} canReview={canReview} outOfQuota={outOfQuota} />
                 </div>
               );
             })

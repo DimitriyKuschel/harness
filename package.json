@@ -29,7 +29,8 @@
     "agents",
     "ai team",
     "brainstorm",
-    "code review"
+    "code review",
+    "telegram"
   ],
   "engines": {
     "vscode": "^1.95.0"
@@ -94,6 +95,17 @@
         "title": "%command.showLog%",
         "category": "Harness",
         "icon": "$(output)"
+      },
+      {
+        "command": "harness.telegram.connect",
+        "title": "%command.telegramConnect%",
+        "category": "Harness",
+        "icon": "$(device-mobile)"
+      },
+      {
+        "command": "harness.telegram.disconnect",
+        "title": "%command.telegramDisconnect%",
+        "category": "Harness"
       }
     ],
     "menus": {
@@ -117,6 +129,11 @@
           "command": "harness.showLog",
           "when": "view == harness.chat",
           "group": "overflow@2"
+        },
+        {
+          "command": "harness.telegram.connect",
+          "when": "view == harness.chat",
+          "group": "overflow@3"
         }
       ]
     },
@@ -186,6 +203,17 @@
           "minimum": 0,
           "maximum": 30,
           "markdownDescription": "%config.team.maxHandoffs%"
+        },
+        "harness.telegram.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.telegram.enabled%"
+        },
+        "harness.telegram.apiUrl": {
+          "type": "string",
+          "default": "https://api.telegram.org",
+          "scope": "application",
+          "markdownDescription": "%config.telegram.apiUrl%"
         },
         "harness.routing.classifier": {
           "type": "string",

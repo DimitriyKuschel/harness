@@ -39,7 +39,18 @@ export interface AgentLimits {
   /** `null`: the plan has no such window (Codex on Pro only has a weekly one). */
   fiveHour?: LimitWindow | null;
   weekly?: LimitWindow | null;
+  /**
+   * A run failed on spent quota: the agent sits out until `until` (unix seconds) whatever the windows say,
+   * because the CLI's own report can disagree with the server. `null` clears it.
+   */
+  exhausted?: Exhaustion | null;
   updatedAt: number;
+}
+
+export interface Exhaustion {
+  until: number;
+  /** The CLI's error, shown to the CEO. */
+  message: string;
 }
 
 export interface Usage {
@@ -100,6 +111,8 @@ export interface AgentAdapter {
   run(req: RunRequest, onEvent: (e: AgentEvent) => void, signal: AbortSignal): Promise<RunOutcome>;
   /** Current subscription quota, read without a model call. */
   readLimits?(): Promise<AgentLimits | undefined>;
+  /** Models the CEO can pin this agent to. */
+  listModels?(): Promise<string[]>;
 }
 
 // ---- Conversation model (shared with the webview) ----
@@ -153,6 +166,10 @@ export interface PlanTask {
   scope?: string;
   /** Tasks that must finish first. */
   dependsOn: string[];
+  /** The agent that started the task and ran out of quota: the new assignee is told to pick up after it. */
+  takeoverFrom?: AgentId;
+  /** A model the lead asked for (the CEO's pin still wins); otherwise the tier decides. */
+  model?: string;
   status: TaskStatus;
   /** The message that executes the task. */
   messageId?: string;
@@ -186,6 +203,8 @@ export interface ChatMessage {
   teamStatus?: TeamStatus;
   usage?: Usage;
   error?: string;
+  /** The run failed because the agent's subscription quota is spent. */
+  outOfQuota?: boolean;
   createdAt: number;
   endedAt?: number;
 }
@@ -211,6 +230,8 @@ export interface Prefs {
   autonomy: Autonomy;
   /** Team runs keep iterating (plan → tasks → check) until the lead says the goal is reached. */
   autopilot: boolean;
+  /** Models the CEO pinned: every run of that agent uses it instead of the tier's model. */
+  models?: Partial<Record<AgentId, string>>;
 }
 
 export interface AgentView {
@@ -222,6 +243,15 @@ export interface AgentView {
   error?: string;
   limits?: AgentLimits;
   busy: boolean;
+  /** Models to pin, for the agent card's menu. */
+  models: string[];
+}
+
+export interface TelegramView {
+  /** `pairing`: connected, waiting for the CEO's /start; `elsewhere`: another VS Code window serves the bot. */
+  state: 'off' | 'pairing' | 'on' | 'elsewhere';
+  bot?: string;
+  window?: string;
 }
 
 export interface ViewState {
@@ -237,6 +267,7 @@ export interface ViewState {
   trusted: boolean;
   /** UI language, resolved by the host. */
   locale: Locale;
+  telegram: TelegramView;
 }
 
 export function messageText(m: ChatMessage): string {

@@ -1,5 +1,6 @@
 import { t } from '../i18n';
 import { prompts } from './prompts';
+import { exhaustedUntil } from './quota';
 import {
   AGENT_LABELS,
   DOMAINS,
@@ -33,6 +34,8 @@ export interface RouteContext {
   /** A few recent messages, so "да, сделай" can be judged in context. */
   recent: string;
   cwd: string;
+  /** Models the CEO pinned per agent. */
+  models?: Partial<Record<AgentId, string>>;
 }
 
 export interface Assessment {
@@ -93,7 +96,8 @@ export class Router {
   finish(agent: AgentId, a: Assessment, ctx: RouteContext, via: RouteInfo['via'], exactTier = false): RouteInfo {
     const tier = exactTier ? a.tier : shiftTier(a.tier, ctx.profile);
     const choice = this.modelFor(agent, tier);
-    return { agent, model: choice.model, effort: choice.effort, tier, domain: a.domain, autonomy: ctx.autonomy, reason: a.reason, via };
+    const model = ctx.models?.[agent] || choice.model;
+    return { agent, model, effort: choice.effort, tier, domain: a.domain, autonomy: ctx.autonomy, reason: a.reason, via };
   }
 
   modelFor(agent: AgentId, tier: Tier): ModelChoice {
@@ -157,12 +161,18 @@ export class Router {
     }
   }
 
-  /** Team roster for the lead's planning prompt: strengths and spent quota. */
-  roster(ctx: Pick<RouteContext, 'available' | 'limits'>): string {
+  /** Team roster for the lead's planning prompt: strengths, models and spent quota. */
+  roster(ctx: Pick<RouteContext, 'available' | 'limits' | 'models'>): string {
     const strengths = this.strengths();
     return ctx.available
-      .map((id) => prompts().rosterLine(AGENT_LABELS[id], id, strengths[id], Math.round(effectiveUsage(ctx.limits[id]))))
+      .map((id) => prompts().rosterLine(AGENT_LABELS[id], id, strengths[id], Math.round(effectiveUsage(ctx.limits[id])), this.modelsLine(id, ctx.models?.[id])))
       .join('\n');
+  }
+
+  /** "trivial → haiku, standard → sonnet, …", or the CEO's pin. */
+  modelsLine(agent: AgentId, pinned?: string): string {
+    if (pinned) return prompts().pinnedModel(pinned);
+    return TIERS.map((tier) => `${tier} → ${this.modelFor(agent, tier).model ?? 'default'}`).join(', ');
   }
 
   /** `harness.strengths` over the built-in descriptions in the UI language. */
@@ -194,12 +204,14 @@ export function bumpTier(tier: Tier): Tier {
   return TIERS[Math.min(TIERS.length - 1, TIERS.indexOf(tier) + 1)];
 }
 
-/** Highest current utilisation across windows, ignoring windows that already reset. */
+/** Highest current utilisation across windows, ignoring windows that already reset. A run that hit the quota counts as 100. */
 export function effectiveUsage(l: AgentLimits | undefined, now = Date.now() / 1000): number {
   if (!l) return 0;
+  if (exhaustedUntil(l, now)) return 100;
   const live = (w?: LimitWindow | null) => (w && !(w.resetsAt && w.resetsAt < now) ? w.usedPercent : 0);
   return Math.max(live(l.fiveHour), live(l.weekly));
 }
+
 
 /**
  * Every subscription is paid for, so spent quota steadily shifts work to colleagues:

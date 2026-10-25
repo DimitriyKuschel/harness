@@ -1,4 +1,4 @@
-import { open, readdir, writeFile, rm } from 'node:fs/promises';
+import { open, readdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { t } from '../../i18n';
@@ -88,6 +88,20 @@ export class CodexAdapter implements AgentAdapter {
     const live = path ? await readAppServerLimits(path).catch(() => undefined) : undefined;
     return live ?? readLatestCodexLimits();
   }
+
+  /** The model picker's list, which the CLI caches for the account. */
+  async listModels(): Promise<string[]> {
+    const file = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'models_cache.json');
+    return parseCodexModels(tryParseJson(await readFile(file, 'utf8').catch(() => '')));
+  }
+}
+
+export function parseCodexModels(cache: any): string[] {
+  const models: any[] = Array.isArray(cache?.models) ? cache.models : [];
+  return models
+    .filter((m) => typeof m?.slug === 'string' && m.visibility !== 'hide')
+    .sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99))
+    .map((m) => m.slug);
 }
 
 class CodexStream {

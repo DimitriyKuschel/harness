@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="themes.css" />
   <link rel="stylesheet" href="../dist/webview.css" />
 </head>
-<!-- Dev-only: renders the webview outside VS Code. ?theme=light  ?empty=1  ?untrusted=1  ?team=1  ?lang=en -->
+<!-- Dev-only: renders the webview outside VS Code. ?theme=light  ?empty=1  ?untrusted=1  ?team=1  ?quota=1  ?menu=gemini  ?lang=en -->
 <body>
   <div id="root"></div>
   <script src="sample.js"></script>
@@ -24,5 +24,10 @@
     });
   </script>
   <script src="../dist/webview.js"></script>
+  <script>
+    // ?menu=gemini: open that agent card's menu.
+    const menu = params.get('menu');
+    if (menu) setTimeout(() => document.querySelector(`.agent-card.agent-${menu} .agent-card-face`)?.click(), 300);
+  </script>
 </body>
 </html>

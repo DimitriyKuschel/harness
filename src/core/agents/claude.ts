@@ -4,6 +4,7 @@ import { t } from '../../i18n';
 import { prompts } from '../prompts';
 import type { AgentAdapter, AgentEvent, AgentLimits, AgentStatus, LimitWindow, RunOutcome, RunRequest, Usage } from '../types';
 import { type Logger, nullLogger, resolveBinary, runJsonl, runText, truncate, tryParseJson } from '../proc';
+import { localTime } from '../quota';
 
 const READONLY_COMMANDS = ['git status', 'git diff', 'git log', 'git show', 'git branch', 'ls', 'find', 'cat', 'head', 'tail', 'wc', 'rg', 'grep', 'tree', 'pwd'];
 // Opening and reading pages only: clicks, typing and page scripts would act in the user's signed-in Chrome.
@@ -92,6 +93,11 @@ export class ClaudeAdapter implements AgentAdapter {
     const out = await runText(path, ['-p', '/usage', '--output-format', 'json', '--no-session-persistence', '--strict-mcp-config'], 30_000);
     const r = tryParseJson(out);
     return typeof r?.result === 'string' ? parseClaudeUsage(r.result) : undefined;
+  }
+
+  /** The CLI has no model list; its aliases always point at the newest model of each family. */
+  async listModels(): Promise<string[]> {
+    return ['haiku', 'sonnet', 'opus'];
   }
 }
 
@@ -213,8 +219,6 @@ export function parseClaudeLimits(info: any): AgentLimits | undefined {
   return undefined;
 }
 
-const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
-
 /** The text of `/usage`: "Current session: 41% used · resets Oct 18, 10:50pm (UTC)". */
 export function parseClaudeUsage(text: string, now = new Date()): AgentLimits | undefined {
   const window = (label: string): LimitWindow | undefined => {
@@ -225,16 +229,10 @@ export function parseClaudeUsage(text: string, now = new Date()): AgentLimits | 
   return out.fiveHour || out.weekly ? out : undefined;
 }
 
-/** "Oct 18, 10:50pm" or "1pm", in the machine's time zone (the CLI prints local time) → unix seconds. */
+/** "Oct 18, 10:50pm" or "1pm" → unix seconds. */
 function parseResetTime(s: string, now: Date): number | undefined {
   const m = /^(?:([a-z]{3})[a-z]*\s+(\d{1,2}),?\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i.exec(s);
-  const month = m?.[1] ? MONTHS.indexOf(m[1].toLowerCase()) : now.getMonth();
-  if (!m || month < 0) return undefined;
-  const hour = (Number(m[3]) % 12) + (m[5].toLowerCase() === 'pm' ? 12 : 0);
-  const d = new Date(now.getFullYear(), month, m[2] ? Number(m[2]) : now.getDate(), hour, Number(m[4] ?? 0));
-  // Resets lie ahead: "Jan 2" seen in late December is next year.
-  if (d.getTime() < now.getTime() - 86_400_000) d.setFullYear(d.getFullYear() + 1);
-  return Math.floor(d.getTime() / 1000);
+  return m ? localTime(now, m[1], m[2], m[3], m[4], m[5]) : undefined;
 }
 
 export function describeTool(name: string, input: any, cwd: string): string | undefined {

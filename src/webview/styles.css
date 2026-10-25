@@ -210,8 +210,8 @@ textarea:focus-visible {
 }
 
 .agent-card {
+  position: relative;
   min-width: 0;
-  padding: 5px 7px 6px;
   border-radius: 6px;
   background: var(--surface);
   border: 1px solid transparent;
@@ -1497,4 +1497,69 @@ kbd {
   .dots::after {
     animation: none;
   }
+}
+
+/* ---- Agent card menu, quota state ---- */
+
+.agent-card-face {
+  padding: 5px 7px 6px;
+}
+
+.agent-card.open {
+  border-color: var(--border);
+}
+
+.agent-card-pin {
+  flex: none;
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.agent-card-status.quota {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--bad);
+}
+
+.agent-card-status.quota .codicon {
+  font-size: 11px;
+}
+
+.agent-menu {
+  top: calc(100% + 4px);
+  bottom: auto;
+  min-width: 210px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.team-strip .agent-card:last-child .agent-menu {
+  left: auto;
+  right: 0;
+}
+
+.picker-option-label.mono {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-weight: normal;
+  font-size: 12px;
+}
+
+.picker-separator {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border);
+}
+
+.icon-button.telegram.on {
+  color: var(--ok);
+}
+
+.icon-button.telegram.pairing {
+  color: var(--warn);
+}
+
+.icon-button.telegram.off,
+.icon-button.telegram.elsewhere {
+  opacity: 0.7;
 }

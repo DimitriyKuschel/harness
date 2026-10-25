@@ -1,4 +1,4 @@
-import type { Prefs, ViewState } from './core/types';
+import type { AgentId, Prefs, ViewState } from './core/types';
 
 /** Webview → extension host. */
 export type ToHost =
@@ -15,10 +15,12 @@ export type ToHost =
   | { type: 'debate'; round: string }
   | { type: 'continueTeam'; id: string }
   | { type: 'unqueue'; index: number }
+  /** The CEO says the agent has quota again (renewed or upgraded plan). */
+  | { type: 'resetQuota'; agent: AgentId }
   | { type: 'openFile'; path: string }
   | { type: 'openLink'; url: string }
   | { type: 'copy'; text: string }
-  | { type: 'command'; command: 'settings' | 'refresh' | 'limits' | 'log' | 'trust' };
+  | { type: 'command'; command: 'settings' | 'refresh' | 'limits' | 'log' | 'trust' | 'telegram' };
 
 /** Extension host → webview. */
 export type ToWebview = { type: 'state'; state: ViewState };

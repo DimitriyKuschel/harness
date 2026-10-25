@@ -1,0 +1,6 @@
+{"event": "init", "conversation_id": "f11ee94a-190a-45c1-9436-ca8bca53ae17", "init": {"model": "gemini-3.8-flash-low", "cwd": "/data/harness"}}
+{"event": "step_update", "step_update": {"conversation_id": "f11ee94a-190a-45c1-9436-ca8bca53ae17", "step_index": 2, "state": "DONE", "step_type": "user_input"}}
+{"event": "step_update", "step_update": {"conversation_id": "f11ee94a-190a-45c1-9436-ca8bca53ae17", "step_index": 3, "state": "DONE", "step_type": "system_message", "duration_seconds": 5.7911e-05}}
+{"event": "step_update", "step_update": {"conversation_id": "f11ee94a-190a-45c1-9436-ca8bca53ae17", "step_index": 4, "state": "ACTIVE", "step_type": "agent_response", "text_delta": "OK2"}}
+{"event": "step_update", "step_update": {"conversation_id": "f11ee94a-190a-45c1-9436-ca8bca53ae17", "step_index": 4, "state": "DONE", "step_type": "agent_response", "text_delta": "\n", "duration_seconds": 1.296310521, "usage": {"input_tokens": 8672, "output_tokens": 2, "thinking_tokens": 0, "cache_read_tokens": 0, "total_tokens": 8674}}}
+{"event": "result", "result": {"conversation_id": "f11ee94a-190a-45c1-9436-ca8bca53ae17", "status": "SUCCESS", "response": "OK2\n", "duration_seconds": 6.334597335, "num_turns": 2, "usage": {"input_tokens": 16342, "output_tokens": 3, "thinking_tokens": 0, "cache_read_tokens": 0, "total_tokens": 16345}}}

@@ -1,20 +1,10 @@
 import type { AgentId, AgentLimits, LimitWindow } from '../core/types';
-import { t } from '../i18n';
+import { formatReset, t } from '../i18n';
+
+export { formatDuration, formatTokens } from '../i18n';
 
 /** Avatar initials. */
 export const AGENT_SHORT: Record<AgentId, string> = { claude: 'Cl', codex: 'Cx', gemini: 'Gm' };
-
-export function formatTokens(n: number): string {
-  if (n < 1000) return String(n);
-  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
-  return `${(n / 1_000_000).toFixed(1)}M`;
-}
-
-export function formatDuration(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000));
-  if (s < 60) return t().time.seconds(s);
-  return t().time.minutes(Math.floor(s / 60), s % 60);
-}
 
 export function relativeTime(ts: number, now = Date.now()): string {
   const { time, dateLocale } = t();
@@ -27,15 +17,6 @@ export function relativeTime(ts: number, now = Date.now()): string {
   const yesterday = new Date(now - 86_400_000);
   if (d.toDateString() === yesterday.toDateString()) return time.yesterday;
   return d.toLocaleDateString(dateLocale, { day: 'numeric', month: 'short' });
-}
-
-export function formatReset(unixSeconds?: number): string {
-  if (!unixSeconds) return '';
-  const { limits, dateLocale } = t();
-  const d = new Date(unixSeconds * 1000);
-  const time = d.toLocaleTimeString(dateLocale, { hour: '2-digit', minute: '2-digit' });
-  if (d.toDateString() === new Date().toDateString()) return limits.resetsAt(time);
-  return limits.resetsOn(d.toLocaleDateString(dateLocale, { day: 'numeric', month: 'short' }), time);
 }
 
 /** A window whose reset time has passed is effectively empty again. */

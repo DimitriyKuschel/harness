@@ -2,7 +2,7 @@
 
 [Русская версия](README.ru.md)
 
-A VS Code extension: a team chat where Claude Code, Codex and Antigravity (Gemini) work on your project as one team, and you are the CEO.
+A VS Code extension: a team chat where Claude Code, Codex and Antigravity (Gemini) work on your project as one team, and you are the CEO. Away from the computer, you follow and steer the team from Telegram.
 
 It works **through the official CLIs on your own subscriptions**: the extension runs `claude -p`, `codex exec` and `agy -p` as child processes. No tokens are extracted and no API keys are needed.
 
@@ -17,6 +17,9 @@ It works **through the official CLIs on your own subscriptions**: the extension 
 - **"Stronger".** Reruns the task with the same agent one level up: a stronger model and more reasoning.
 - **Shared context.** Each agent keeps its own native session. Before each turn, an agent gets only the chat messages it hasn't seen yet.
 - **Subscription limits.** The agent cards in the header show how much is **left** in the 5-hour and weekly windows; the tooltip shows when they reset. The data comes from the CLIs themselves, without a model call: `claude -p /usage`, `codex app-server` (`account/rateLimits/read`), `agy -p /usage` (the Gemini model group). It refreshes on startup, every 5 minutes, after an agent run and when you click a card. The Codex Pro plan has no 5-hour window, so the card shows "∞".
+- **Out of quota: a colleague takes over.** When a run fails on a spent quota ("Individual quota reached… Resets in 163h…", "You've hit your usage limit…", "5-hour limit reached ∙ resets 3pm"), the agent is marked out of quota until the reset time in the message, even if its CLI's `/usage` still shows quota left. Its plan tasks, a routed answer, the lead's plan and check, a review and a summary go to a colleague with quota at once; the new assignee is told the first one may have done part of the work. Brainstorms go on without it, and the router skips it. A failed message offers "Hand over" instead of "Retry". If the quota comes back early (a plan upgrade), the agent card's menu has "Quota is back".
+- **The CEO picks the model.** A click on an agent card opens a menu: "Auto" (the model for the task's complexity, from `harness.models`) or a specific model, pinned to the agent for every run. The list comes from the CLIs (`agy models`, Codex's model cache, Claude's aliases). Agents know this and point the CEO there; the lead can set a model for one plan task when the CEO names one.
+- **Telegram.** Watch and steer the team from your phone: see below.
 - **Spend profile:** Eco / Balanced / Max shifts the model level down or up.
 - **Access:** Read only / Edits / Full access (see the table below).
 - **Queue.** Messages sent while the team is working run in order.
@@ -37,7 +40,27 @@ npm run package          # → harness.vsix
 code --install-extension harness.vsix
 ```
 
-Development: `npm run watch` and F5 (Extension Development Host). UI preview without VS Code: run `python3 -m http.server` in the project root and open `preview/index.html` (`?theme=light`, `?empty=1`, `?team=1`, `?untrusted=1`, `?lang=en`).
+Development: `npm run watch` and F5 (Extension Development Host). UI preview without VS Code: run `python3 -m http.server` in the project root and open `preview/index.html` (`?theme=light`, `?empty=1`, `?team=1`, `?quota=1`, `?menu=gemini`, `?untrusted=1`, `?lang=en`).
+
+## Telegram
+
+The team's work is mirrored to your Telegram, and you can send tasks and commands from there, as from the chat.
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) (`/newbot`) and copy its token.
+2. In VS Code: **Harness: Connect Telegram** (or the phone icon in the chat header), paste the token. It is kept in VS Code's secret storage.
+3. Click "Open Telegram", then Start in the bot. The link carries a one-time code valid for 10 minutes; the bot links to your private chat and answers no one else.
+
+What arrives in Telegram: your messages from VS Code, finished agent answers (long tasks and brainstorm answers as a preview with "Show all"), the plan with task progress, the lead's check with its verdict, notices. While the team works, a "who is on what" message with a Stop button sits at the bottom.
+
+From Telegram you can:
+
+- send tasks, with `@claude`, `@codex`, `@gemini`, `@all`; replying to an agent's message continues with that agent;
+- use the buttons under answers as in the extension: Retry / Hand over, Review, Fix, Another iteration, Another round, Stronger;
+- `/status`: the team, limits, settings; `/stop`; `/new`; `/chats`;
+- `/mode`, `/profile`, `/access` (full access asks first), `/autopilot`;
+- `/model gemini gemini-3.8-flash-high`, `/model gemini auto`: pin or unpin a model.
+
+The bot works while VS Code is open: the extension long-polls Telegram, so no public URL is needed. Messages that arrived while VS Code was closed are not run. With several windows open, one serves the bot (`/status` shows which); to switch, run **Harness: Connect Telegram** → "Serve Telegram from this window". In Restricted Mode the bot shows the chat but runs no agents.
 
 ## Access modes
 
@@ -61,6 +84,8 @@ In VS Code's Restricted Mode the chat opens, but agents don't run until the fold
 - `harness.team.maxIterations`: how many iterations autopilot may run without the CEO.
 - `harness.routing.classifier`: `llm` (more accurate, one cheap call per message) or `heuristic` (no call).
 - `harness.strengths`: what each agent is good at; the classifier and the lead see it when assigning tasks. Agents not listed here get a built-in description in the interface language.
+- `harness.telegram.enabled`: mirror the chat to the connected Telegram bot and take tasks from it.
+- `harness.telegram.apiUrl`: the Bot API server (user settings only: the token is sent there). Change it only for your own Bot API server or a proxy you trust.
 
 ## Known limitations
 
@@ -75,10 +100,12 @@ src/core/          no VS Code dependencies
   agents/          CLI adapters → a common event stream
   prompts/         agent instructions (en, ru)
   router.ts        task assessment, choice of agent/model/effort, quota accounting
+  quota.ts         recognising spent-quota errors and their reset time
   orchestrator.ts  chat, context, brainstorm, teamwork, review, fixes
   plan.ts          parsing the lead's plan (the team-plan block)
 src/i18n/          UI strings (en, ru), shared by the host and the webview
 src/host/          extension controller, chat storage, webview
+  telegram/        the bot: Bot API, chat mirror and commands, chat linking, which window serves it
 src/webview/       React chat UI
 src/test/          unit tests (npm test) and manual smoke scripts against the real CLIs
 ```

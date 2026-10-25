@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { t } from '../i18n';
+import { formatReset, t } from '../i18n';
 import { parsePlan, parseStatus, stripPlanBlock } from './plan';
 import { prompts } from './prompts';
 import type { Logger } from './proc';
 import { truncate } from './proc';
+import { exhaustedUntil, quotaError } from './quota';
 import { type Router, bumpTier, effectiveUsage, heuristicAssessment, quotaPenalty, shiftTier, type RouteContext } from './router';
 import {
   AGENT_IDS,
@@ -16,6 +17,8 @@ import {
   type AgentLimits,
   type ChatMessage,
   type Conversation,
+  type Domain,
+  type Exhaustion,
   type MessageKind,
   type PlanTask,
   type Prefs,
@@ -34,6 +37,8 @@ export interface OrchestratorDeps {
   available: () => AgentId[];
   limits: () => Partial<Record<AgentId, AgentLimits>>;
   onLimits: (agent: AgentId, limits: AgentLimits) => void;
+  /** A run hit the agent's quota (or, with `null`, a run succeeded after that). */
+  onExhausted: (agent: AgentId, exhaustion: Exhaustion | null) => void;
   /** An agent finished a run started at `startedAt` (its quota has moved). */
   onRunEnd: (agent: AgentId, startedAt: number) => void;
   /** Conversation changed (stream tick, new message…). */
@@ -69,7 +74,12 @@ interface DispatchOpts {
   iteration?: number;
   /** Kept on the message so the run can be repeated (plan tasks, the lead's report). */
   prompt?: string;
+  /** If the agent runs out of quota, a colleague (not one of `exclude`) takes the run over. */
+  failover?: { prefs: Prefs; exclude?: AgentId[] };
 }
+
+/** Kinds of work that change the project: whoever takes over checks what the first agent already did. */
+const WORK_KINDS = new Set<MessageKind | undefined>(['answer', 'task', 'fix']);
 
 const CONTEXT_CHAR_BUDGET = 24_000;
 const PER_MESSAGE_CHARS = 4_000;
@@ -176,10 +186,10 @@ export class Orchestrator {
 
     try {
       if (prefs.mode === 'brainstorm' || mentions.all) {
-        const team = mentioned.length >= 2 ? mentioned : available;
+        const team = mentioned.length >= 2 ? mentioned : this.healthy(available, user.id);
         await this.brainstorm(text, user, team, prefs);
       } else if (prefs.mode === 'team' && mentioned.length !== 1 && available.length >= 2) {
-        await this.teamwork(text, user, mentioned.length >= 2 ? mentioned : available, prefs);
+        await this.teamwork(text, user, mentioned.length >= 2 ? mentioned : this.healthy(available, user.id), prefs);
       } else if (mentioned.length) {
         const answers = await Promise.all(
           mentioned.map((agent) =>
@@ -208,8 +218,8 @@ export class Orchestrator {
           this.controllers.delete(ac);
         }
         if (placeholder.status === 'stopped') return;
-        if (team) await this.teamwork(text, user, available, prefs, { placeholder, route });
-        else await this.relay([await this.dispatch({ ...base, route, task: ceoTask(text, false), kind: 'answer', message: placeholder })], prefs);
+        if (team) await this.teamwork(text, user, this.healthy(available), prefs, { placeholder, route });
+        else await this.relay([await this.dispatch({ ...base, route, task: ceoTask(text, false), kind: 'answer', message: placeholder, failover: { prefs } })], prefs);
       }
     } finally {
       this.settle();
@@ -240,6 +250,7 @@ export class Orchestrator {
         seenAfter: last,
         excludeIds: [target.id],
         task: reviewTask(target, question),
+        failover: { prefs, exclude: [target.agent] },
       });
       await this.relay([msg], prefs);
     } finally {
@@ -273,10 +284,13 @@ export class Orchestrator {
     }
   }
 
-  /** Same agent again: one tier up ("Stronger"), or the same tier after a failure. */
+  /**
+   * Same agent again: one tier up ("Stronger"), or the same tier after a failure. An agent out of quota hands
+   * the run to a colleague, except in discussions, where each agent speaks for itself.
+   */
   async rerun(messageId: string, prefs: Prefs, stronger: boolean): Promise<void> {
     const target = this.find(messageId);
-    if (!target?.agent || !this.deps.available().includes(target.agent)) return;
+    if (!target?.agent) return;
     const question = this.find(target.replyTo ?? '');
     if (target.kind === 'plan') {
       // A failed plan: plan (and execute) again — from the CEO's message, or the next iteration after a check.
@@ -284,22 +298,39 @@ export class Orchestrator {
       if (question?.kind === 'report') return this.continueTeam(question.id, prefs);
       if (!goal) return;
       try {
-        return await this.teamwork(messageText(goal), goal, this.deps.available(), prefs);
+        return await this.teamwork(messageText(goal), goal, this.healthy(this.deps.available()), prefs);
       } finally {
         this.settle();
       }
     }
     const current = target.route?.tier ?? 'standard';
     const ctx = this.routeContext(prefs, this.conversation.messages.length);
-    const route = this.deps.router.forAgent(target.agent, '', ctx, stronger ? bumpTier(current) : current);
-    route.reason = stronger ? t().reasons.stronger : t().reasons.retry;
-    route.domain = target.route?.domain ?? route.domain;
-    if (target.route && (target.kind === 'brainstorm' || target.kind === 'debate' || target.kind === 'review')) route.autonomy = target.route.autonomy;
+    const domain = target.route?.domain ?? 'other';
+    let agent = target.agent;
+    let from: AgentId | undefined;
+    const personal = target.kind === 'brainstorm' || target.kind === 'debate' || target.kind === 'fix';
+    if (!stronger && !personal && (this.exhausted(agent) || !ctx.available.includes(agent))) {
+      // A review is never handed to the author of the work under review.
+      const exclude = [agent, ...(target.kind === 'review' && question?.agent ? [question.agent] : [])];
+      const other = this.fallbackAgent(domain, exclude, ctx);
+      if (other) [from, agent] = [agent, other];
+    }
+    if (!ctx.available.includes(agent)) return;
+    const route = this.deps.router.forAgent(agent, '', ctx, stronger ? bumpTier(current) : current);
+    route.reason = from ? t().reasons.takeover(AGENT_LABELS[from]) : stronger ? t().reasons.stronger : t().reasons.retry;
+    route.domain = domain;
+    if (target.route && (target.kind === 'brainstorm' || target.kind === 'debate' || target.kind === 'review' || target.kind === 'report')) {
+      route.autonomy = target.route.autonomy;
+    }
     const last = this.conversation.messages.length - 1;
-    const instruction = stronger ? prompts().stronger : prompts().retry;
+    const instruction = from && WORK_KINDS.has(target.kind) ? prompts().takeover(AGENT_LABELS[from]) : stronger ? prompts().stronger : prompts().retry;
     const brief = target.prompt ?? (question ? prompts().taskQuote(messageText(question)) : '');
     const planTask = target.taskId ? question?.plan?.find((t) => t.id === target.taskId) : undefined;
-    if (planTask) planTask.status = 'running';
+    if (planTask) {
+      planTask.status = 'running';
+      if (from) Object.assign(planTask, { agent, model: undefined });
+      else if (planTask.model && !prefs.models?.[agent]) route.model = planTask.model;
+    }
     try {
       const msg = await this.dispatch({
         route,
@@ -332,8 +363,8 @@ export class Orchestrator {
     const roundMsgs = conv.messages.filter((m) => m.round === roundId);
     const question = this.find(roundMsgs[0]?.replyTo ?? '');
     const available = this.deps.available();
-    const team = [...new Set(roundMsgs.filter((m) => m.kind !== 'synthesis' && m.status === 'done' && m.agent).map((m) => m.agent!))].filter((a) =>
-      available.includes(a),
+    const team = [...new Set(roundMsgs.filter((m) => m.kind !== 'synthesis' && m.status === 'done' && m.agent).map((m) => m.agent!))].filter(
+      (a) => available.includes(a) && !this.exhausted(a),
     );
     if (!question || team.length < 2) return;
 
@@ -402,6 +433,7 @@ export class Orchestrator {
       contextUntil: last,
       seenAfter: last,
       ephemeral: true,
+      failover: { prefs },
       task: prompts().synthesis(
         messageText(question),
         ok.map((m) => `\n### ${AGENT_LABELS[m.agent!]}\n${truncate(messageText(m), 6000)}`).join('\n'),
@@ -443,9 +475,11 @@ export class Orchestrator {
       seenAfter: userIdx,
       task: prompts().lead(text, this.deps.router.roster(ctx)),
       message: routed?.placeholder,
+      failover: { prefs },
     });
     const tasks = this.takePlan(plan, ctx);
-    if (tasks?.length) await this.teamLoop(plan, tasks, user, lead, prefs, 1);
+    // A colleague may have taken the plan over from a lead out of quota.
+    if (tasks?.length) await this.teamLoop(plan, tasks, user, plan.agent ?? lead, prefs, 1);
   }
 
   /** "Another iteration" under the lead's check: run the plan it already made, or plan the next step. */
@@ -453,7 +487,7 @@ export class Orchestrator {
     const report = this.find(reportId);
     const goal = this.find(report?.goal ?? '');
     if (!report || !goal) return;
-    const team = this.deps.available();
+    const team = this.healthy(this.deps.available(), report.id);
     const ctx = { ...this.routeContext(prefs, this.conversation.messages.length), available: team };
     const lead = this.leadFor(ctx, report.agent);
     if (!lead) return;
@@ -477,9 +511,10 @@ export class Orchestrator {
         contextUntil: last,
         seenAfter: last,
         task: prompts().nextPlan(truncate(messageText(goal), 4000), iteration, this.deps.router.roster(ctx)),
+        failover: { prefs },
       });
       const tasks = this.takePlan(plan, ctx);
-      if (tasks?.length) await this.teamLoop(plan, tasks, goal, lead, prefs, iteration);
+      if (tasks?.length) await this.teamLoop(plan, tasks, goal, plan.agent ?? lead, prefs, iteration);
     } finally {
       this.settle();
     }
@@ -521,7 +556,7 @@ export class Orchestrator {
           return;
         }
 
-        const team = this.deps.available();
+        const team = this.healthy(this.deps.available());
         const ctx = { ...this.routeContext(prefs, this.conversation.messages.length), available: team };
         const mayPlan = prefs.autopilot && iteration < max;
         const last = this.settledUntil();
@@ -543,6 +578,7 @@ export class Orchestrator {
           seenAfter: last,
           task: prompt,
           prompt,
+          failover: { prefs },
         });
         if (report.status !== 'done' || ac.signal.aborted) return;
         const next = this.takePlan(report, ctx);
@@ -588,12 +624,19 @@ export class Orchestrator {
       const ctx = this.routeContext(prefs, this.conversation.messages.length);
       const route = this.deps.router.finish(
         t.agent,
-        { ...heuristicAssessment(''), tier: t.tier, domain: t.domain, reason: reasons.planTask(n, tasks.length, AGENT_LABELS[lead]) },
+        {
+          ...heuristicAssessment(''),
+          tier: t.tier,
+          domain: t.domain,
+          reason: t.takeoverFrom ? reasons.takeover(AGENT_LABELS[t.takeoverFrom]) : reasons.planTask(n, tasks.length, AGENT_LABELS[lead]),
+        },
         ctx,
         'system',
       );
+      if (t.model && !prefs.models?.[t.agent]) route.model = t.model;
       const last = this.settledUntil();
-      const prompt = prompts().taskBrief(n, tasks.length, AGENT_LABELS[lead], t.title, t.task, t.scope);
+      const brief = prompts().taskBrief(n, tasks.length, AGENT_LABELS[lead], t.title, t.task, t.scope);
+      const prompt = t.takeoverFrom ? `${prompts().takeover(AGENT_LABELS[t.takeoverFrom])}\n\n${brief}` : brief;
       const msg = this.add({ role: 'agent', parts: [], status: 'streaming' });
       t.messageId = msg.id;
       await this.dispatch({
@@ -611,11 +654,14 @@ export class Orchestrator {
         message: msg,
       });
       t.status = taskStatus(msg);
+      if (msg.outOfQuota && !signal.aborted) this.reassign(t, prefs, msg);
       this.deps.onSettled(this.conversation); // persist progress: team runs can take hours
     };
 
     for (;;) {
       if (signal.aborted) return;
+      // An agent that ran out of quota won't get through its queue: colleagues take its tasks.
+      for (const t of tasks) if (t.status === 'pending' && this.exhausted(t.agent)) this.reassign(t, prefs);
       for (const t of tasks) if (t.status === 'pending' && t.dependsOn.some((d) => failed(byId.get(d)!))) t.status = 'skipped';
       // One task per agent at a time: each agent has a single native session.
       const busy = new Set(tasks.filter((t) => t.status === 'running').map((t) => t.agent));
@@ -672,7 +718,7 @@ export class Orchestrator {
       const { agents, all } = handoffMentions(messageText(m));
       for (const agent of all ? AGENT_IDS : agents) {
         if (agent === m.agent || (all && !available.includes(agent))) continue;
-        if (!available.includes(agent) || busy.has(agent)) {
+        if (!available.includes(agent) || busy.has(agent) || this.exhausted(agent)) {
           skipped.add(agent);
           continue;
         }
@@ -682,7 +728,9 @@ export class Orchestrator {
     }
     if (skipped.size) {
       const notices = t().notices;
-      const list = [...skipped].map((a) => `${AGENT_LABELS[a]}${busy.has(a) ? notices.busy : ''}`).join(', ');
+      const list = [...skipped]
+        .map((a) => `${AGENT_LABELS[a]}${busy.has(a) ? notices.busy : this.exhausted(a) ? notices.outOfQuota(formatReset(this.exhausted(a))) : ''}`)
+        .join(', ');
       this.notice(notices.noHandoff(list), replies[replies.length - 1].id);
     }
     return asks;
@@ -768,10 +816,18 @@ export class Orchestrator {
         if (outcome.usage) msg.usage = outcome.usage;
         if (!msg.parts.some((p) => p.type === 'text') && outcome.text) msg.parts.push({ type: 'text', text: outcome.text });
         if (ac.signal.aborted) msg.status = 'stopped';
-        else if (outcome.ok) msg.status = 'done';
-        else {
+        else if (outcome.ok) {
+          msg.status = 'done';
+          if (this.exhausted(route.agent)) this.deps.onExhausted(route.agent, null);
+        } else {
           msg.status = 'error';
           msg.error = outcome.error;
+          const hit = quotaError(outcome.error);
+          if (hit) {
+            msg.outOfQuota = true;
+            this.deps.log.info(`${route.agent}: out of quota until ${new Date(hit.until * 1000).toISOString()}${hit.known ? '' : ' (guessed)'}`);
+            this.deps.onExhausted(route.agent, { until: hit.until, message: truncate(outcome.error ?? '', 300) });
+          }
         }
         break;
       }
@@ -787,7 +843,63 @@ export class Orchestrator {
       this.deps.onChange();
       this.deps.onRunEnd(route.agent, msg.createdAt);
     }
+    if (msg.outOfQuota && o.failover) return (await this.takeOver(o, msg)) ?? msg;
     return msg;
+  }
+
+  // ---------- Quota ----------
+
+  /** A colleague redoes a run whose agent ran out of quota. Undefined when nobody is left. */
+  private async takeOver(o: DispatchOpts, failed: ChatMessage): Promise<ChatMessage | undefined> {
+    const from = o.route.agent;
+    const exclude = [...(o.failover?.exclude ?? []), from];
+    const ctx = { ...this.routeContext(o.failover!.prefs, this.conversation.messages.length), autonomy: o.route.autonomy };
+    const domain = o.route.domain ?? 'other';
+    const agent = this.fallbackAgent(domain, exclude, ctx);
+    const notices = t().notices;
+    const until = formatReset(this.exhausted(from));
+    if (!agent) {
+      this.notice(notices.noTakeover(AGENT_LABELS[from], until), failed.id);
+      return undefined;
+    }
+    this.notice(notices.takeover(AGENT_LABELS[from], until, AGENT_LABELS[agent]), failed.id);
+    const route = this.deps.router.finish(agent, { ...heuristicAssessment(''), tier: o.route.tier, domain, reason: t().reasons.takeover(AGENT_LABELS[from]) }, ctx, o.route.via, true);
+    const task = WORK_KINDS.has(o.kind) ? `${prompts().takeover(AGENT_LABELS[from])}\n\n${o.task}` : o.task;
+    return this.dispatch({ ...o, route, task, message: undefined, failover: { ...o.failover!, exclude } });
+  }
+
+  /** Hands a plan task of an agent out of quota to a colleague; the scheduler runs it when they are free. */
+  private reassign(task: PlanTask, prefs: Prefs, failed?: ChatMessage): void {
+    const from = task.agent;
+    const ctx = this.routeContext(prefs, this.conversation.messages.length);
+    const agent = this.fallbackAgent(task.domain, [from], ctx);
+    if (!agent) return;
+    // The lead's model was for the first assignee.
+    Object.assign(task, { agent, model: undefined, status: 'pending' });
+    if (failed) task.takeoverFrom = from;
+    this.notice(t().notices.reassigned(task.title, AGENT_LABELS[from], formatReset(this.exhausted(from)), AGENT_LABELS[agent]), failed?.id);
+  }
+
+  /** The best colleague for `domain` that still has quota, `exclude` aside. */
+  private fallbackAgent(domain: Domain, exclude: AgentId[], ctx: RouteContext): AgentId | undefined {
+    const available = ctx.available.filter((a) => !exclude.includes(a) && !this.exhausted(a));
+    return this.deps.router.pickAgent({ domain }, { ...ctx, available, busy: new Set() });
+  }
+
+  /** When the agent may work again, if its last run hit the quota (unix seconds). */
+  private exhausted(agent: AgentId): number | undefined {
+    return exhaustedUntil(this.deps.limits()[agent]);
+  }
+
+  /** The team without agents out of quota, unless nobody would be left. `anchor` gets a notice about who sits out. */
+  private healthy(team: AgentId[], anchor?: string): AgentId[] {
+    const ok = team.filter((a) => !this.exhausted(a));
+    if (!ok.length || ok.length === team.length) return team;
+    if (anchor) {
+      const out = team.filter((a) => this.exhausted(a));
+      this.notice(t().notices.sittingOut(out.map((a) => `${AGENT_LABELS[a]} (${formatReset(this.exhausted(a))})`).join(', ')), anchor);
+    }
+    return ok;
   }
 
   private apply(msg: ChatMessage, ev: AgentEvent): void {
@@ -859,6 +971,7 @@ export class Orchestrator {
       autonomy: prefs.autonomy,
       recent,
       cwd: this.deps.cwd(),
+      models: prefs.models,
     };
   }
 

@@ -28,6 +28,7 @@ const orch = new Orchestrator({
   available: () => ['claude', 'codex', 'gemini'] as AgentId[],
   limits: () => limits,
   onLimits: (a, l) => (limits[a] = l),
+  onExhausted: (a, e) => (limits[a] = { ...limits[a], exhausted: e, updatedAt: Date.now() }),
   onRunEnd: () => {},
   onChange: () => {},
   onSettled: () => {},

@@ -44,6 +44,7 @@ function startHost(settings: Record<string, unknown> = {}) {
     storageUri: vscode.Uri.file(join(root, 'workspace')),
     globalState: vscode.memento(),
     workspaceState: vscode.memento(),
+    secrets: vscode.secretStorage(),
   };
 
   activate(context);
@@ -54,7 +55,7 @@ function startHost(settings: Record<string, unknown> = {}) {
   const dispose = () => {
     for (const d of context.subscriptions) d.dispose?.();
   };
-  return { root, webview, last, dispose };
+  return { root, webview, last, dispose, context };
 }
 
 test('extension host: chat, mentions, brainstorm, review, persistence', async () => {
@@ -356,3 +357,84 @@ test('quota: the header shows what each CLI reports; a click on a card re-reads 
 function messageTextOf(m: { parts: any[] }): string {
   return m.parts.map((p) => p.text ?? '').join('');
 }
+
+test('quota: an agent that runs out mid-plan hands its task over, sits out, and «Передать другому» re-routes its failed work', async () => {
+  const { webview, last, dispose } = startHost({
+    'harness.agents.claude.path': fakeCli('claude-plan.jsonl'),
+    'harness.agents.gemini.path': fakeCli('gemini-quota.jsonl'),
+  });
+  const visible = (s: ViewState) => s.conversation.messages.filter((m) => m.role !== 'system');
+  const notices = (s: ViewState) => s.conversation.messages.filter((m) => m.role === 'system').map(messageTextOf);
+  try {
+    webview.send({ type: 'ready' });
+    await until(() => (last()?.agents.every((a) => a.installed) ? last() : undefined), 'agents detected');
+    const started = Date.now() / 1000;
+    webview.send({ type: 'send', text: 'Сделайте клон asana', prefs: { mode: 'team', profile: 'balanced', autonomy: 'auto', autopilot: false } });
+    let s = await until(() => {
+      const st = last();
+      return st && !st.running && st.conversation.messages.some((m) => m.kind === 'report' && m.status !== 'streaming') ? st : undefined;
+    }, 'team run finished');
+
+    // Gemini's design task failed on quota; Claude (next in design affinity) redid it after its own task.
+    const plan = s.conversation.messages.find((m) => m.kind === 'plan')!;
+    assert.deepEqual(plan.plan?.map((t) => [t.id, t.agent, t.status]), [['t1', 'codex', 'done'], ['t2', 'claude', 'done'], ['t3', 'claude', 'done']]);
+    const failed = s.conversation.messages.find((m) => m.agent === 'gemini')!;
+    assert.equal(failed.status, 'error');
+    assert.equal(failed.outOfQuota, true);
+    assert.deepEqual(failed.usage, { input: 120000, output: 1200, cached: 0 }, "this run's tokens, not the conversation's 62.7M");
+    const redo = s.conversation.messages.find((m) => m.id === plan.plan![1].messageId)!;
+    assert.equal(redo.agent, 'claude');
+    assert.match(redo.prompt ?? '', /^Эту задачу начал Gemini, но у него кончился лимит подписки/);
+    assert.equal(redo.route?.reason, 'вместо Gemini: у него кончился лимит');
+    assert.ok(notices(s).some((n) => /«Макеты экранов»: у Gemini кончился лимит \(сброс .+\) — задачу берёт Claude\./.test(n)), notices(s).join('\n'));
+
+    // The header shows Gemini as out of quota until the reset from the error, not from /usage.
+    const gemini = s.agents.find((a) => a.id === 'gemini')!;
+    const back = gemini.limits?.exhausted?.until ?? 0;
+    assert.ok(Math.abs(back - (started + 163 * 3600 + 58 * 60 + 6)) < 30, String(back));
+    assert.match(gemini.limits!.exhausted!.message, /^Individual quota reached/);
+
+    // A brainstorm goes on without Gemini.
+    webview.send({ type: 'send', text: 'что дальше?', prefs: { mode: 'brainstorm', profile: 'balanced', autonomy: 'readonly' } });
+    s = await until(() => (last()?.running === false && last()!.conversation.messages.some((m) => m.kind === 'synthesis') ? last() : undefined), 'brainstorm');
+    assert.deepEqual(s.conversation.messages.filter((m) => m.kind === 'brainstorm').map((m) => m.agent).sort(), ['claude', 'codex']);
+    assert.ok(notices(s).some((n) => /^Без лимита, пропускают: Gemini \(сброс/.test(n)));
+
+    // The CEO calls Gemini by name: it still runs (and fails); retrying hands the work to a colleague.
+    webview.send({ type: 'send', text: '@gemini посмотри макеты', prefs: { mode: 'auto', profile: 'balanced', autonomy: 'readonly' } });
+    s = await until(() => (last()?.running === false && visible(last()!).at(-1)?.agent === 'gemini' ? last() : undefined), 'mention failed');
+    const mention = visible(s).at(-1)!;
+    assert.equal(mention.outOfQuota, true);
+    webview.send({ type: 'rerun', id: mention.id, stronger: false });
+    s = await until(() => (last()?.running === false && visible(last()!).at(-1)?.id !== mention.id ? last() : undefined), 'handed over');
+    const handed = visible(s).at(-1)!;
+    assert.notEqual(handed.agent, 'gemini');
+    assert.equal(handed.status, 'done', handed.error);
+    assert.match(handed.route?.reason ?? '', /вместо Gemini/);
+
+    // The CEO says the quota is back.
+    webview.send({ type: 'resetQuota', agent: 'gemini' });
+    await until(() => (last()?.agents.find((a) => a.id === 'gemini')?.limits?.exhausted === null ? last() : undefined), 'quota mark cleared');
+  } finally {
+    dispose();
+  }
+});
+
+test('models: the CEO pins a model per agent; every run of that agent uses it', async () => {
+  const { webview, last, dispose } = startHost();
+  try {
+    webview.send({ type: 'ready' });
+    const ready = await until(() => (last()?.agents.every((a) => a.installed) ? last() : undefined), 'agents detected');
+    assert.ok(ready.agents.find((a) => a.id === 'gemini')!.models.includes('gemini-4-argon-high'), 'configured models are offered');
+    const prefs = { mode: 'auto', profile: 'balanced', autonomy: 'readonly', autopilot: true, models: { gemini: 'gemini-3.8-flash-high' } };
+    webview.send({ type: 'prefs', prefs });
+    await until(() => (last()?.prefs.models?.gemini === 'gemini-3.8-flash-high' ? last() : undefined), 'pin echoed to the views');
+    webview.send({ type: 'send', text: '@gemini критически важно: проверь архитектуру', prefs });
+    const s = await until(() => (last()?.running === false && last()!.conversation.messages.some((m) => m.agent === 'gemini') ? last() : undefined), 'gemini answered');
+    const answer = s.conversation.messages.find((m) => m.agent === 'gemini')!;
+    assert.equal(answer.route?.tier, 'critical');
+    assert.equal(answer.route?.model, 'gemini-3.8-flash-high');
+  } finally {
+    dispose();
+  }
+});

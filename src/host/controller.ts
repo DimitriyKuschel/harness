@@ -16,6 +16,7 @@ import {
   type AgentLimits,
   type AgentStatus,
   type Conversation,
+  type Exhaustion,
   type Prefs,
   type ViewState,
 } from '../core/types';
@@ -23,6 +24,7 @@ import { locale, resolveLocale, setLocale, t } from '../i18n';
 import type { ToHost, ToWebview } from '../protocol';
 import { ConversationStore } from './store';
 import { renderHtml } from './html';
+import { TelegramService } from './telegram/service';
 
 const DEFAULT_PREFS: Prefs = { mode: 'auto', profile: 'balanced', autonomy: 'auto', autopilot: true };
 /** Messages that start CLI runs; ignored in Restricted Mode. */
@@ -39,12 +41,15 @@ export class Controller implements vscode.Disposable {
   private readonly statusItem: vscode.StatusBarItem;
   private readonly disposables: vscode.Disposable[] = [];
   private statuses: Partial<Record<AgentId, AgentStatus>> = {};
+  /** What each CLI offers to pin, read once per detection. */
+  private cliModels: Partial<Record<AgentId, string[]>> = {};
   private limits: Partial<Record<AgentId, AgentLimits>>;
   private limitsReadAt: Partial<Record<AgentId, number>> = {};
   private readonly pollTimer: NodeJS.Timeout;
   private prefs: Prefs;
   private queue: { text: string; prefs: Prefs }[] = [];
   private panel?: vscode.WebviewPanel;
+  readonly telegram: TelegramService;
   private emitTimer?: NodeJS.Timeout;
   private saveTimer?: NodeJS.Timeout;
 
@@ -77,6 +82,7 @@ export class Controller implements vscode.Disposable {
       available: () => this.available(),
       limits: () => this.limits,
       onLimits: (agent, limits) => this.updateLimits(agent, limits),
+      onExhausted: (agent, exhausted) => this.setExhausted(agent, exhausted),
       // Claude and Codex runs report quota themselves; agy runs don't.
       onRunEnd: (agent, startedAt) => {
         if ((this.limits[agent]?.updatedAt ?? 0) < startedAt) void this.refreshLimits([agent], true);
@@ -88,8 +94,11 @@ export class Controller implements vscode.Disposable {
       hasQueued: () => this.queue.length > 0,
     });
 
+    // Telegram answers /status from the phone: keep the quota fresh while it is on, too.
+    this.telegram = new TelegramService(context, logger, { state: () => this.viewState(), post: (m) => this.handle(m) }, () => this.scheduleEmit());
+
     this.pollTimer = setInterval(() => {
-      if (this.webviews.size) void this.refreshLimits();
+      if (this.webviews.size || this.telegram.view().state === 'on') void this.refreshLimits();
     }, LIMITS_POLL_MS);
     this.pollTimer.unref?.();
 
@@ -100,8 +109,10 @@ export class Controller implements vscode.Disposable {
 
     this.disposables.push(
       this.statusItem,
+      this.telegram,
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration('harness.language')) applyLocale();
+        if (e.affectsConfiguration('harness.telegram')) this.telegram.restart();
         if (e.affectsConfiguration('harness.agents')) void this.refreshAgents();
         else if (e.affectsConfiguration('harness')) this.scheduleEmit();
       }),
@@ -116,6 +127,7 @@ export class Controller implements vscode.Disposable {
     if (last) this.orch.load(last);
     await this.refreshAgents();
     void this.refreshLimits();
+    void this.telegram.start();
   }
 
   async refreshAgents(): Promise<void> {
@@ -125,6 +137,24 @@ export class Controller implements vscode.Disposable {
       this.log.info(`${s.id}: ${s.installed ? `${s.version} (${s.path})` : `unavailable: ${s.error}`}`);
     }
     this.scheduleEmit();
+    await Promise.all(
+      results
+        .filter((s) => s.installed)
+        .map(async (s) => {
+          this.cliModels[s.id] = await this.adapters[s.id].listModels?.().catch((e) => {
+            this.log.error(`${s.id}: couldn't list models: ${String(e)}`);
+            return undefined;
+          });
+        }),
+    );
+    this.scheduleEmit();
+  }
+
+  /** Models the CEO can pin: the CLI's list plus whatever the tier table names. */
+  private modelChoices(id: AgentId): string[] {
+    const table = this.routerConfig().models[id] ?? {};
+    const configured = Object.values(table).map((c) => c?.model).filter((m): m is string => !!m);
+    return [...new Set([...(this.cliModels[id] ?? []), ...configured])];
   }
 
   /** Re-reads quotas through the CLIs; `force` skips the per-agent minimum gap. */
@@ -176,6 +206,7 @@ export class Controller implements vscode.Disposable {
     void this.store.setLast(undefined);
   }
 
+  /** Messages from the webview, and the same from Telegram. */
   private async handle(m: ToHost): Promise<void> {
     if (!vscode.workspace.isTrusted && RUNS_AGENTS.has(m.type)) return this.emit();
     switch (m.type) {
@@ -221,6 +252,9 @@ export class Controller implements vscode.Disposable {
       case 'unqueue':
         this.queue.splice(m.index, 1);
         return this.scheduleEmit();
+      case 'resetQuota':
+        this.clearExhausted(m.agent);
+        return this.refreshLimits([m.agent], true);
       case 'openFile':
         return this.openFile(m.path);
       case 'openLink':
@@ -234,6 +268,7 @@ export class Controller implements vscode.Disposable {
         if (m.command === 'limits' || m.command === 'refresh') await this.refreshLimits(this.available(), true);
         if (m.command === 'log') this.log.show();
         if (m.command === 'trust') await vscode.commands.executeCommand('workbench.trust.manage');
+        if (m.command === 'telegram') await this.telegram.connect();
         return;
     }
   }
@@ -250,6 +285,7 @@ export class Controller implements vscode.Disposable {
   private emit(): void {
     const msg: ToWebview = { type: 'state', state: this.viewState() };
     for (const w of this.webviews) void w.postMessage(msg);
+    this.telegram.notify();
   }
 
   private viewState(): ViewState {
@@ -266,6 +302,7 @@ export class Controller implements vscode.Disposable {
         error: this.statuses[id]?.error,
         limits: this.limits[id],
         busy: busy.has(id),
+        models: this.modelChoices(id),
       })),
       running: this.orch.running,
       queue: this.queue.map((q) => q.text),
@@ -273,6 +310,7 @@ export class Controller implements vscode.Disposable {
       workspace: vscode.workspace.workspaceFolders?.[0]?.name,
       trusted: vscode.workspace.isTrusted,
       locale: locale(),
+      telegram: this.telegram.view(),
     };
   }
 
@@ -290,6 +328,8 @@ export class Controller implements vscode.Disposable {
   private setPrefs(p: Prefs): void {
     this.prefs = p;
     void this.context.globalState.update('harness.prefs', p);
+    // Other views (a second panel, Telegram) follow the change.
+    this.scheduleEmit();
   }
 
   private updateLimits(agent: AgentId, l: AgentLimits): void {
@@ -297,6 +337,16 @@ export class Controller implements vscode.Disposable {
     this.limits[agent] = { ...this.limits[agent], ...Object.fromEntries(Object.entries(l).filter(([, v]) => v !== undefined)) } as AgentLimits;
     void this.context.globalState.update('harness.limits', this.limits);
     this.scheduleEmit();
+  }
+
+  private setExhausted(agent: AgentId, exhausted: Exhaustion | null): void {
+    this.limits[agent] = { ...(this.limits[agent] ?? { updatedAt: 0 }), exhausted };
+    void this.context.globalState.update('harness.limits', this.limits);
+    this.scheduleEmit();
+  }
+
+  private clearExhausted(agent: AgentId): void {
+    if (this.limits[agent]?.exhausted) this.setExhausted(agent, null);
   }
 
   private isEnabled(id: AgentId): boolean {

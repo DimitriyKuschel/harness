@@ -52,7 +52,7 @@ export class GeminiAdapter implements AgentAdapter {
     else if (autonomy === 'auto') args.push('--dangerously-skip-permissions', '--sandbox', '--disable-slash-commands');
     else args.push('--dangerously-skip-permissions', '--disable-slash-commands');
 
-    const s = new GeminiStream(req.cwd, onEvent);
+    const s = new GeminiStream(req.cwd, onEvent, !!req.sessionId);
     const res = await runJsonl(path, args, { cwd: req.cwd, signal, log: this.log }, (line) => s.handle(tryParseJson(line)));
     const sessionId = s.conversationId ?? req.sessionId;
     if (res.aborted) return { ok: false, text: s.text, sessionId, error: t().cli.stopped };
@@ -80,6 +80,20 @@ export class GeminiAdapter implements AgentAdapter {
     if (!path) return undefined;
     return parseAgyUsage(tryParseJson(await runText(path, ['-p', '/usage', '--output-format', 'json'], 30_000)));
   }
+
+  /** `agy models`: "slug<TAB>Display name" per line. The Claude/GPT models there draw on another quota group. */
+  async listModels(): Promise<string[]> {
+    const path = await resolveBinary(this.binary());
+    if (!path) return [];
+    return parseAgyModels(await runText(path, ['models'], 30_000));
+  }
+}
+
+export function parseAgyModels(out: string): string[] {
+  return out
+    .split('\n')
+    .map((l) => l.split('\t')[0].trim())
+    .filter((slug) => /^gemini-[\w.-]+$/.test(slug));
 }
 
 /**
@@ -107,10 +121,13 @@ class GeminiStream {
   text = '';
   private lastTextStep = -1;
   private tools = new Set<string>();
+  /** This run's model calls. The result's usage covers the whole conversation, earlier runs included. */
+  private steps?: Usage;
 
   constructor(
     private readonly cwd: string,
     private readonly emit: (e: AgentEvent) => void,
+    private readonly resumed: boolean,
   ) {}
 
   handle(ev: any): void {
@@ -128,16 +145,20 @@ class GeminiStream {
       this.step(body);
     } else if (ev.event === 'result') {
       this.result = body;
-      const u = body.usage;
-      if (u) {
-        this.usage = { input: (u.input_tokens ?? 0) + (u.cache_read_tokens ?? 0), output: (u.output_tokens ?? 0) + (u.thinking_tokens ?? 0), cached: u.cache_read_tokens ?? 0 };
-        this.emit({ kind: 'usage', usage: this.usage });
+      const usage = this.steps ?? (this.resumed || !body.usage ? undefined : toUsage(body.usage));
+      if (usage) {
+        this.usage = usage;
+        this.emit({ kind: 'usage', usage });
       }
     }
   }
 
   private step(b: any): void {
     const id = `step-${b.step_index}`;
+    if (b.usage && b.state === 'DONE') {
+      const u = toUsage(b.usage);
+      this.steps = { input: (this.steps?.input ?? 0) + u.input, output: (this.steps?.output ?? 0) + u.output, cached: (this.steps?.cached ?? 0) + (u.cached ?? 0) };
+    }
     if (b.step_type === 'agent_response' && typeof b.text_delta === 'string' && b.text_delta) {
       const newBlock = b.step_index !== this.lastTextStep && this.text.trim().length > 0;
       // Don't open the answer with a bare "\n" (steps end with one).
@@ -154,6 +175,10 @@ class GeminiStream {
       if (b.state && b.state !== 'ACTIVE') this.emit({ kind: 'tool_done', id, ok: b.state === 'DONE' });
     }
   }
+}
+
+function toUsage(u: any): Usage {
+  return { input: (u.input_tokens ?? 0) + (u.cache_read_tokens ?? 0), output: (u.output_tokens ?? 0) + (u.thinking_tokens ?? 0), cached: u.cache_read_tokens ?? 0 };
 }
 
 function describe(params: any, cwd: string): string | undefined {

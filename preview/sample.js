@@ -114,6 +114,18 @@ function sampleState(empty) {
     parts: [text('Каркас собран, `docker compose up` поднимает сервисы. Дальше — API задач, макеты и экраны.')],
   });
   if (teamMode) messages.splice(0, messages.length, ...teamMessages);
+  // ?quota=1: Gemini ran out mid-task; the header marks it, the failed task offers a hand-over.
+  const quota = new URLSearchParams(location.search).has('quota');
+  const quotaError = 'Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 163h58m6s.';
+  if (quota) {
+    messages.push({
+      id: 'gq', role: 'agent', agent: 'gemini', kind: 'task', replyTo: 'tp', taskId: 't2', subtitle: 'итерация 2 · 1/1 · Быстрые линейки и привязка к направляющим', status: 'error', createdAt: at(10), endedAt: at(10.3),
+      route: { agent: 'gemini', model: 'gemini-4-argon-low', effort: 'low', tier: 'standard', domain: 'frontend', autonomy: 'auto', via: 'system', reason: 'задача 1/1 из плана Claude' },
+      usage: { input: 120000, output: 1200 }, error: quotaError, outOfQuota: true,
+      parts: [tool('q1', 'view_file', 'studio/src/shell/Rulers.tsx'), tool('q2', 'view_file', 'studio/src/shell/rulersState.ts')],
+    });
+    messages.push({ id: 'gn', role: 'system', kind: 'notice', status: 'done', createdAt: at(10.3), parts: [text('«Быстрые линейки и привязка к направляющим»: у Gemini кончился лимит (сброс 1 нояб., 21:05) — задачу берёт Claude.')] });
+  }
 
   return {
     conversation: { id: 'c1', title: empty ? 'Новый чат' : 'Healthcheck и мониторинг', createdAt: t0, updatedAt: Date.now(), messages: empty ? [] : messages, sessions: {} },
@@ -123,17 +135,25 @@ function sampleState(empty) {
       { id: 'cx', title: 'Рефакторинг модуля оплаты', updatedAt: Date.now() - 4 * 86400_000 },
     ],
     agents: [
-      { id: 'claude', label: 'Claude', installed: true, enabled: true, version: '2.1.302', busy: !empty, limits: { fiveHour: { usedPercent: 34, resetsAt: reset5h }, weekly: { usedPercent: 12, resetsAt: resetWeek }, updatedAt: Date.now() } },
+      { id: 'claude', label: 'Claude', installed: true, enabled: true, version: '2.1.302', busy: !empty, models: ['haiku', 'sonnet', 'opus'], limits: { fiveHour: { usedPercent: 34, resetsAt: reset5h }, weekly: { usedPercent: 12, resetsAt: resetWeek }, updatedAt: Date.now() } },
       // Codex on Pro has no 5-hour window.
-      { id: 'codex', label: 'Codex', installed: true, enabled: true, version: '0.163.0', busy: false, limits: { fiveHour: null, weekly: { usedPercent: 74, resetsAt: resetWeek }, updatedAt: Date.now() } },
-      { id: 'gemini', label: 'Gemini', installed: true, enabled: true, version: '1.4.2', busy: false, limits: { fiveHour: { usedPercent: 91, resetsAt: reset5h }, weekly: { usedPercent: 6, resetsAt: resetWeek }, updatedAt: Date.now() - 4 * 60_000 } },
+      { id: 'codex', label: 'Codex', installed: true, enabled: true, version: '0.163.0', busy: false, models: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'], limits: { fiveHour: null, weekly: { usedPercent: 74, resetsAt: resetWeek }, updatedAt: Date.now() } },
+      {
+        id: 'gemini', label: 'Gemini', installed: true, enabled: true, version: '1.4.2', busy: false,
+        models: ['gemini-4-argon-high', 'gemini-4-argon-medium', 'gemini-4-argon-low', 'gemini-3.8-flash-high', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-low'],
+        limits: {
+          fiveHour: { usedPercent: quota ? 3 : 91, resetsAt: reset5h }, weekly: { usedPercent: quota ? 1 : 6, resetsAt: resetWeek }, updatedAt: Date.now() - 4 * 60_000,
+          exhausted: quota ? { until: resetWeek, message: quotaError } : undefined,
+        },
+      },
     ],
     running: !empty,
     queue: empty ? [] : ['Потом обнови README: раздел про мониторинг'],
-    prefs: { mode: teamMode ? 'team' : 'auto', profile: 'balanced', autonomy: 'auto', autopilot: true },
+    prefs: { mode: teamMode ? 'team' : 'auto', profile: 'balanced', autonomy: 'auto', autopilot: true, models: quota ? {} : { gemini: 'gemini-3.8-flash-high' } },
     workspace: 'my-service',
     trusted: !new URLSearchParams(location.search).has('untrusted'),
     // The sample chat is in Russian; ?lang=en switches the UI around it.
     locale: new URLSearchParams(location.search).get('lang') === 'en' ? 'en' : 'ru',
+    telegram: { state: 'on', bot: 'my_harness_bot' },
   };
 }

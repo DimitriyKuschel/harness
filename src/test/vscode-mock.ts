@@ -56,6 +56,12 @@ export const mock = {
   opened: [] as { path: string; selection?: Range }[],
   warnings: [] as string[],
   clipboard: '',
+  /** Answers for the next pickers and prompts: an item's label or id, a string, a button label. */
+  quickPick: undefined as string | undefined,
+  inputBox: undefined as string | undefined,
+  infoButton: undefined as string | undefined,
+  infos: [] as string[],
+  external: [] as string[],
 };
 
 const defaults: Record<string, unknown> = Object.fromEntries(
@@ -115,6 +121,15 @@ export const window = {
   showWarningMessage: async (m: string) => {
     mock.warnings.push(m);
   },
+  showErrorMessage: async (m: string) => {
+    mock.warnings.push(m);
+  },
+  showInformationMessage: async (m: string, ...buttons: string[]) => {
+    mock.infos.push(m);
+    return buttons.find((b) => b === mock.infoButton);
+  },
+  showQuickPick: async (items: { label: string; id?: string }[]) => items.find((i) => i.id === mock.quickPick || i.label === mock.quickPick),
+  showInputBox: async () => mock.inputBox,
 };
 
 export const commands = {
@@ -132,8 +147,21 @@ export const env = {
       mock.clipboard = t;
     },
   },
-  openExternal: async () => true,
+  openExternal: async (u: Uri) => {
+    mock.external.push(String(u.fsPath));
+    return true;
+  },
 };
+
+/** VS Code's SecretStorage, in memory. */
+export function secretStorage() {
+  const data = new Map<string, string>();
+  return {
+    get: async (k: string) => data.get(k),
+    store: async (k: string, v: string) => void data.set(k, v),
+    delete: async (k: string) => void data.delete(k),
+  };
+}
 
 export function memento() {
   const data = new Map<string, unknown>();

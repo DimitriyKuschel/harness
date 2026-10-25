@@ -3,12 +3,13 @@ import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { fakeCli, fakeReplyCli } from './helpers';
 import { ClaudeAdapter, parseClaudeLimits, parseClaudeUsage } from '../core/agents/claude';
-import { CodexAdapter, parseCodexRateLimits } from '../core/agents/codex';
-import { GeminiAdapter } from '../core/agents/gemini';
+import { CodexAdapter, parseCodexModels, parseCodexRateLimits } from '../core/agents/codex';
+import { GeminiAdapter, parseAgyModels } from '../core/agents/gemini';
 import { resolveLocale, setLocale } from '../i18n';
 import { discussionTier, handoffMentions, parseMentions, teamBrief } from '../core/orchestrator';
 import { parsePlan, parseStatus, stripPlanBlock } from '../core/plan';
-import { Router, effectiveUsage, heuristicAssessment, isSmallTalk, shiftTier, type RouteContext, type RouterConfig } from '../core/router';
+import { exhaustedUntil, quotaError } from '../core/quota';
+import { Router, effectiveUsage, heuristicAssessment, isSmallTalk, quotaPenalty, shiftTier, type RouteContext, type RouterConfig } from '../core/router';
 import type { AgentEvent, AgentId, AgentLimits } from '../core/types';
 
 const pkg = require('../../package.json');
@@ -246,4 +247,80 @@ test('gemini (agy) adapter: replays a recorded stream', async () => {
   assert.ok(events.some((e) => e.kind === 'tool' && e.name === 'run_command' && e.detail === 'ls media'));
   assert.ok(events.some((e) => e.kind === 'tool_done' && e.ok));
   assert.ok(events.some((e) => e.kind === 'model'));
+});
+
+test('quota errors: each CLI\'s wording, and when the quota comes back', () => {
+  const now = new Date(2026, 9, 25, 12, 0).getTime();
+  const nowS = now / 1000;
+  const agy = quotaError('Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 163h58m6s.', now);
+  assert.deepEqual(agy, { until: nowS + 163 * 3600 + 58 * 60 + 6, known: true });
+  const codex = quotaError("You've hit your usage limit. Upgrade to Pro (https://openai.com/chatgpt/pricing) or try again in 2 days 3 hours 4 minutes.", now);
+  assert.equal(codex?.until, nowS + 2 * 86400 + 3 * 3600 + 4 * 60);
+  const codexAt = quotaError("You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 27th, 2026 3:04 PM.", now);
+  assert.equal(codexAt?.until, new Date(2026, 9, 27, 15, 4).getTime() / 1000);
+  const codexToday = quotaError("You've hit your usage limit. Try again at 9:30 AM.", now);
+  assert.equal(codexToday?.until, new Date(2026, 9, 26, 9, 30).getTime() / 1000, 'a time already past today is tomorrow');
+  const claude = quotaError('5-hour limit reached ∙ resets 3pm (Europe/Moscow)', now);
+  assert.equal(claude?.until, new Date(2026, 9, 25, 15, 0).getTime() / 1000);
+  const claudeWeek = quotaError("You've hit your limit · resets Oct 30, 9am", now);
+  assert.equal(claudeWeek?.until, new Date(2026, 9, 30, 9, 0).getTime() / 1000);
+  assert.equal(quotaError('Claude AI usage limit reached|1793000000', now)?.until, 1793000000);
+  assert.deepEqual(quotaError('RESOURCE_EXHAUSTED: quota exceeded', now), { until: nowS + 3600, known: false });
+  assert.deepEqual(quotaError('429 Too Many Requests', now), { until: nowS + 300, known: false });
+  assert.equal(quotaError('session not found', now), undefined);
+  assert.equal(quotaError('Нет разрешения на: run_command — попробуйте режим «Правки»', now), undefined);
+  assert.equal(quotaError(undefined, now), undefined);
+});
+
+test('quota: an agent whose run hit the quota sits out until the reset, whatever its windows say', () => {
+  const l: AgentLimits = { weekly: { usedPercent: 1, resetsAt: now() + 86400 }, exhausted: { until: now() + 3600, message: 'quota' }, updatedAt: 0 };
+  assert.equal(exhaustedUntil(l), now() + 3600);
+  assert.equal(effectiveUsage(l), 100);
+  assert.ok(quotaPenalty(l) >= 100);
+  assert.equal(router.pickAgent({ domain: 'code' }, ctx({ codex: l })), 'claude');
+  const lifted = { ...l, exhausted: { until: now() - 1, message: 'quota' } };
+  assert.equal(exhaustedUntil(lifted), undefined);
+  assert.equal(effectiveUsage(lifted), 1);
+});
+
+test('models: pins override the tier table; the lead sees models per tier; plans may name a model', () => {
+  const c: RouteContext = { ...ctx(), profile: 'balanced', autonomy: 'auto', recent: '', cwd: '', models: { gemini: 'gemini-3.8-flash-high' } };
+  const pinned = router.forAgent('gemini', 'критическая задача', c);
+  assert.equal(pinned.model, 'gemini-3.8-flash-high');
+  assert.equal(pinned.tier, 'critical');
+  assert.equal(router.forAgent('claude', 'критическая задача', c).model, 'opus');
+  const roster = router.roster({ available: ['claude', 'gemini'], limits: {}, models: c.models });
+  assert.match(roster, /Claude.*trivial → haiku, standard → sonnet, hard → opus, critical → opus/);
+  assert.match(roster, /Gemini.*gemini-3\.8-flash-high for every tier \(pinned by the CEO\)/);
+  const plan = '```team-plan\n{"tasks": [{"id": "a", "agent": "gemini", "task": "x", "model": "gemini-3.8-flash-high"}, {"id": "b", "agent": "gemini", "task": "y", "model": "--yolo"}]}\n```';
+  assert.deepEqual(parsePlan(plan, (_, w) => w as AgentId)!.map((t) => t.model), ['gemini-3.8-flash-high', undefined]);
+});
+
+test('models: lists to pin from each CLI', () => {
+  assert.deepEqual(parseAgyModels('Fetching available models...\ngemini-4-argon-high\tGemini 4 Argon (High)\nclaude-opus-5-5-low\tClaude Opus 5.5 (Low)\ngemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n'), [
+    'gemini-4-argon-high',
+    'gemini-3.8-flash-low',
+  ]);
+  assert.deepEqual(
+    parseCodexModels({ models: [{ slug: 'gpt-6-luna', priority: 5, visibility: 'list' }, { slug: 'gpt-reserve', priority: 4, visibility: 'hide' }, { slug: 'gpt-6.1-sol', priority: 1, visibility: 'list' }] }),
+    ['gpt-6.1-sol', 'gpt-6-luna'],
+  );
+  assert.deepEqual(parseCodexModels(undefined), []);
+});
+
+test('gemini (agy) adapter: a resumed conversation reports this run\'s tokens, not the whole conversation\'s', async () => {
+  const run = (sessionId?: string) =>
+    new GeminiAdapter(() => fakeCli('gemini-resumed.jsonl')).run({ prompt: 'x', cwd: '/data/harness', autonomy: 'readonly', sessionId }, () => {}, new AbortController().signal);
+  const resumed = await run('f11ee94a-190a-45c1-9436-ca8bca53ae17');
+  assert.ok(resumed.ok, resumed.error);
+  assert.deepEqual(resumed.usage, { input: 8672, output: 2, cached: 0 }, 'the result says 16342: both runs of the conversation');
+
+  const failed = await new GeminiAdapter(() => fakeCli('gemini-quota.jsonl')).run(
+    { prompt: 'x', cwd: '/data/harness', autonomy: 'auto', sessionId: 'old' },
+    () => {},
+    new AbortController().signal,
+  );
+  assert.equal(failed.ok, false);
+  assert.match(failed.error ?? '', /^Individual quota reached/);
+  assert.deepEqual(failed.usage, { input: 120000, output: 1200, cached: 0 });
 });

@@ -20,6 +20,7 @@ export const en = {
       "- Don't repeat what colleagues said: build on their answers and argue on substance.",
       '- If you need a colleague right now (to answer, to check, to do their part), address them with @: @claude, @codex, @gemini or @all. They get your message and reply next. When you merely refer to a colleague, write the name without @. In brainstorms and in tasks from the lead\'s plan, @ doesn\'t pass the turn: the system sets the order there.',
       "- If your part needs the result of a colleague who is still working, don't wait for it in the background: say so and end your reply. Once you finish what colleagues are waiting for, call them with @.",
+      "- You run inside Harness (a VS Code extension). Harness picks each run's model and effort by the task's complexity (the `harness.models` setting); the CEO can pin a model to an agent by clicking the agent's card at the top of the chat, or with /model in Telegram. You can't switch models yourself, and the CLIs' own settings (`/model` etc.) don't apply here: if the CEO asks for another model, point them to the card. The lead can set a model for one task in the plan.",
       `- Project working folder: ${cwd}`,
     ].join('\n'),
 
@@ -55,6 +56,8 @@ export const en = {
 
   stronger: 'The CEO asks you to redo this task more thoroughly and in more depth (you now have a stronger model and more reasoning).',
   retry: 'The previous attempt failed with an error. Do the task again.',
+  takeover: (from: string) =>
+    `${from} started this task but ran out of its subscription quota. It may have done part of the work: check the current state (git status / git diff, the files involved), then finish the task.`,
   taskQuote: (task: string) => `Task:\n"""\n${task}\n"""`,
 
   debate: (question: string) =>
@@ -199,8 +202,9 @@ export const en = {
       "reason: up to 12 words, in English, about the essence of the task (don't name agents).",
     ].join('\n'),
 
-  rosterLine: (label: string, id: string, strengths: string, used: number) =>
-    `- ${label} (agent: "${id}"): ${strengths} Subscription limit used: ${used}%.`,
+  rosterLine: (label: string, id: string, strengths: string, used: number, models: string) =>
+    `- ${label} (agent: "${id}"): ${strengths} Models by tier: ${models}. Subscription limit used: ${used}%.`,
+  pinnedModel: (model: string) => `${model} for every tier (pinned by the CEO)`,
 
   /** Appended to Claude's prompt in read-only mode: its allowlist only matches plain commands. */
   readonlyClaude: (commands: string, browser: boolean) =>
@@ -233,5 +237,6 @@ function planRules(roster: string): string {
     '{"tasks": [{"id": "t1", "title": "Short title", "agent": "codex", "domain": "code", "tier": "standard", "scope": "backend/", "dependsOn": [], "task": "Detailed brief"}]}',
     '```',
     `agent: one of the quoted names above; domain: ${DOMAINS.join(', ')}; tier: trivial | standard | hard | critical. Don't overrate it, limits are finite.`,
+    'The tier picks the model (see the team list). Add "model" to a task only when the CEO asked for a specific model, e.g. "model": "gemini-3.8-flash-high".',
   ].join('\n');
 }

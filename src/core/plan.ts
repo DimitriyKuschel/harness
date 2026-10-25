@@ -7,6 +7,8 @@ import { DOMAINS, TIERS, type AgentId, type Domain, type PlanTask, type TeamStat
 const FENCE = '```team-plan';
 const STATUS_FENCE = '```team-status';
 const MAX_TASKS = 8;
+/** It ends up as a CLI argument: a plain model id, nothing else. */
+const MODEL_SLUG = /^\w[\w.:/-]{0,79}$/;
 
 /** The lead's prose without the machine-readable blocks (also while they are still streaming). */
 export function stripPlanBlock(text: string): string {
@@ -65,6 +67,7 @@ export function parsePlan(text: string, assign: (domain: Domain, wanted?: string
       task: String(t.task).trim(),
       scope: typeof t.scope === 'string' && t.scope.trim() ? t.scope.trim().slice(0, 200) : undefined,
       dependsOn: Array.isArray(t.dependsOn) ? t.dependsOn.map(String) : [],
+      model: typeof t.model === 'string' && MODEL_SLUG.test(t.model.trim()) ? t.model.trim() : undefined,
       status: 'pending',
     });
   }

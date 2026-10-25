@@ -26,3 +26,25 @@ export function resolveLocale(setting: string | undefined, display: string): Loc
   if (setting === 'en' || setting === 'ru') return setting;
   return display.toLowerCase().startsWith('ru') ? 'ru' : 'en';
 }
+
+/** "resets at 21:05" today, "resets 1 Nov, 21:05" later. */
+export function formatReset(unixSeconds?: number): string {
+  if (!unixSeconds) return '';
+  const { limits, dateLocale } = t();
+  const d = new Date(unixSeconds * 1000);
+  const time = d.toLocaleTimeString(dateLocale, { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === new Date().toDateString()) return limits.resetsAt(time);
+  return limits.resetsOn(d.toLocaleDateString(dateLocale, { day: 'numeric', month: 'short' }), time);
+}
+
+export function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+export function formatDuration(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return t().time.seconds(s);
+  return t().time.minutes(Math.floor(s / 60), s % 60);
+}

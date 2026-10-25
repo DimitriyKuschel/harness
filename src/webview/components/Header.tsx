@@ -1,10 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
-import type { AgentView, LimitWindow, ViewState } from '../../core/types';
-import { t } from '../../i18n';
+import { exhaustedUntil } from '../../core/quota';
+import type { AgentView, LimitWindow, Prefs, TelegramView, ViewState } from '../../core/types';
+import { formatReset, t } from '../../i18n';
 import { AGENT_SHORT, cx, limitLevel, limitsTooltip, liveWindow, relativeTime } from '../util';
 import { post } from '../vscode';
 
-export function Header({ state }: { state: ViewState }) {
+interface Props {
+  state: ViewState;
+  prefs: Prefs;
+  onPrefs: (p: Prefs) => void;
+}
+
+export function Header({ state, prefs, onPrefs }: Props) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const { conversation, history } = state;
   const hasMessages = conversation.messages.length > 0;
@@ -19,6 +26,7 @@ export function Header({ state }: { state: ViewState }) {
           <i className={cx('codicon', historyOpen ? 'codicon-chevron-up' : 'codicon-chevron-down')} />
         </button>
         <div className="spacer" />
+        <TelegramButton view={state.telegram} />
         <button className="icon-button" title={s.newChat} onClick={() => post({ type: 'newChat' })}>
           <i className="codicon codicon-add" />
         </button>
@@ -29,7 +37,12 @@ export function Header({ state }: { state: ViewState }) {
 
       <div className="team-strip">
         {state.agents.map((a) => (
-          <AgentPill key={a.id} agent={a} />
+          <AgentPill
+            key={a.id}
+            agent={a}
+            pinned={prefs.models?.[a.id]}
+            onPin={(model) => onPrefs({ ...prefs, models: { ...prefs.models, [a.id]: model } })}
+          />
         ))}
       </div>
 
@@ -45,37 +58,117 @@ export function Header({ state }: { state: ViewState }) {
   );
 }
 
-function AgentPill({ agent }: { agent: AgentView }) {
+function TelegramButton({ view }: { view: TelegramView }) {
+  const s = t().telegram;
+  const bot = view.bot ?? '';
+  const title =
+    view.state === 'on' ? s.viewOn(bot) : view.state === 'pairing' ? s.viewPairing(bot) : view.state === 'elsewhere' ? s.viewElsewhere(bot, view.window ?? '') : s.viewOff;
+  return (
+    <button className={cx('icon-button', 'telegram', view.state)} title={title} onClick={() => post({ type: 'command', command: 'telegram' })}>
+      <i className="codicon codicon-device-mobile" />
+    </button>
+  );
+}
+
+function AgentPill({ agent, pinned, onPin }: { agent: AgentView; pinned?: string; onPin: (model: string | undefined) => void }) {
+  const [open, setOpen] = useState(false);
   const off = !agent.installed || !agent.enabled;
   const { agents: a, limits } = t();
   const status = !agent.installed ? a.notInstalled : !agent.enabled ? a.disabled : agent.busy ? a.working : a.ready;
+  const until = exhaustedUntil(agent.limits);
   const tooltip = [
     `${agent.label}${agent.version ? ` ${agent.version}` : ''} — ${status}`,
     !agent.installed && agent.error ? agent.error : '',
+    until ? `${a.outOfQuota} (${formatReset(until)}): ${agent.limits?.exhausted?.message}` : '',
     agent.installed ? limitsTooltip(agent.limits) : '',
-    off ? '' : a.clickToRefresh,
+    pinned ? a.pinned(pinned) : '',
+    off ? '' : a.clickForMenu,
   ]
     .filter(Boolean)
     .join('\n');
 
   return (
-    <div
-      className={cx('agent-card', `agent-${agent.id}`, off && 'off', agent.busy && 'busy')}
-      title={tooltip}
-      onClick={() => post({ type: 'command', command: off ? (agent.installed ? 'settings' : 'refresh') : 'limits' })}
-    >
-      <div className="agent-card-top">
-        <span className="avatar small">{AGENT_SHORT[agent.id]}</span>
-        <span className="agent-card-name">{agent.label}</span>
-      </div>
-      {off ? (
-        <div className="agent-card-status">{status}</div>
-      ) : (
-        <div className="meters">
-          <Meter label={limits.meterFiveHours} w={agent.limits?.fiveHour} />
-          <Meter label={limits.meterWeek} w={agent.limits?.weekly} />
+    <div className={cx('agent-card', `agent-${agent.id}`, off && 'off', agent.busy && 'busy', !!until && 'out', open && 'open')}>
+      <div
+        className="agent-card-face"
+        title={open ? undefined : tooltip}
+        onClick={() => (off ? post({ type: 'command', command: agent.installed ? 'settings' : 'refresh' }) : setOpen((v) => !v))}
+      >
+        <div className="agent-card-top">
+          <span className="avatar small">{AGENT_SHORT[agent.id]}</span>
+          <span className="agent-card-name">{agent.label}</span>
+          {pinned && <i className="codicon codicon-pinned agent-card-pin" />}
         </div>
+        {off ? (
+          <div className="agent-card-status">{status}</div>
+        ) : until ? (
+          <div className="agent-card-status quota">
+            <i className="codicon codicon-error" /> {a.outOfQuota}
+          </div>
+        ) : (
+          <div className="meters">
+            <Meter label={limits.meterFiveHours} w={agent.limits?.fiveHour} />
+            <Meter label={limits.meterWeek} w={agent.limits?.weekly} />
+          </div>
+        )}
+      </div>
+      {open && <AgentMenu agent={agent} pinned={pinned} until={until} onPin={onPin} onClose={() => setOpen(false)} />}
+    </div>
+  );
+}
+
+/** The agent card's menu: pin a model, re-read the quota, put an agent marked as out of quota back to work. */
+function AgentMenu({ agent, pinned, until, onPin, onClose }: { agent: AgentView; pinned?: string; until?: number; onPin: (model: string | undefined) => void; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.parentElement?.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [onClose]);
+
+  const a = t().agents;
+  const choose = (model: string | undefined) => {
+    onPin(model);
+    onClose();
+  };
+  const models = pinned && !agent.models.includes(pinned) ? [pinned, ...agent.models] : agent.models;
+  return (
+    <div className="picker-menu agent-menu" ref={ref} role="menu">
+      <div className="picker-title">{a.modelMenu}</div>
+      <button className="picker-option" role="menuitemradio" aria-checked={!pinned} onClick={() => choose(undefined)}>
+        <i className={cx('codicon', pinned ? 'codicon-blank' : 'codicon-check')} />
+        <span>
+          <span className="picker-option-label">{a.modelAuto}</span>
+          <span className="picker-option-desc">{a.modelAutoHint}</span>
+        </span>
+      </button>
+      {models.map((m) => (
+        <button key={m} className="picker-option" role="menuitemradio" aria-checked={pinned === m} onClick={() => choose(m)}>
+          <i className={cx('codicon', pinned === m ? 'codicon-check' : 'codicon-blank')} />
+          <span className="picker-option-label mono">{m}</span>
+        </button>
+      ))}
+      <div className="picker-separator" />
+      {until && (
+        <button className="picker-option" role="menuitem" onClick={() => (post({ type: 'resetQuota', agent: agent.id }), onClose())}>
+          <i className="codicon codicon-play" />
+          <span>
+            <span className="picker-option-label">{a.backToWork}</span>
+            <span className="picker-option-desc">{a.backToWorkHint(formatReset(until))}</span>
+          </span>
+        </button>
       )}
+      <button className="picker-option" role="menuitem" onClick={() => (post({ type: 'command', command: 'limits' }), onClose())}>
+        <i className="codicon codicon-refresh" />
+        <span className="picker-option-label">{a.refreshLimits}</span>
+      </button>
     </div>
   );
 }

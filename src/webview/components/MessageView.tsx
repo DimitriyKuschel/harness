@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { stripPlanBlock } from '../../core/plan';
 import {
   AGENT_LABELS,
+  type AgentId,
   type ChatMessage,
   type MessageKind,
   type Part,
@@ -37,9 +38,11 @@ interface Props {
   /** Team or another message is running: actions that start work are disabled. */
   busy: boolean;
   canReview: boolean;
+  /** Agents whose last run hit the quota: retrying their failed work goes to a colleague. */
+  outOfQuota: ReadonlySet<AgentId>;
 }
 
-export function MessageView({ message, busy, canReview }: Props) {
+export function MessageView({ message, busy, canReview, outOfQuota }: Props) {
   if (message.role === 'user') return <UserMessage message={message} />;
   if (message.role === 'system') {
     return (
@@ -48,7 +51,7 @@ export function MessageView({ message, busy, canReview }: Props) {
       </div>
     );
   }
-  return <AgentMessage message={message} busy={busy} canReview={canReview} />;
+  return <AgentMessage message={message} busy={busy} canReview={canReview} outOfQuota={outOfQuota} />;
 }
 
 function UserMessage({ message }: { message: ChatMessage }) {
@@ -61,7 +64,7 @@ function UserMessage({ message }: { message: ChatMessage }) {
   );
 }
 
-function AgentMessage({ message: m, busy, canReview }: Props) {
+function AgentMessage({ message: m, busy, canReview, outOfQuota }: Props) {
   const agent = m.agent;
   const live = m.status === 'streaming' || m.status === 'routing';
   const raw = messageText(m);
@@ -128,7 +131,7 @@ function AgentMessage({ message: m, busy, canReview }: Props) {
         )}
         {m.status === 'stopped' && <div className="stopped">{s.stopped}</div>}
 
-        {!live && <Footer m={m} busy={busy} canReview={canReview} text={text} />}
+        {!live && <Footer m={m} busy={busy} canReview={canReview} text={text} handOver={!!m.agent && outOfQuota.has(m.agent)} />}
       </div>
     </div>
   );
@@ -276,7 +279,7 @@ function PlanCard({ tasks, title }: { tasks: PlanTask[]; title?: string }) {
   );
 }
 
-function Footer({ m, busy, canReview, text }: { m: ChatMessage; busy: boolean; canReview: boolean; text: string }) {
+function Footer({ m, busy, canReview, text, handOver }: { m: ChatMessage; busy: boolean; canReview: boolean; text: string; handOver: boolean }) {
   const actions: { icon: string; label: string; title: string; run: () => void; primary?: boolean }[] = [];
   const s = t().message;
   const a = s.actions;
@@ -285,7 +288,10 @@ function Footer({ m, busy, canReview, text }: { m: ChatMessage; busy: boolean; c
   const redoable = work && m.kind !== 'task' && m.kind !== 'report';
 
   if (m.status === 'error' || m.status === 'stopped') {
-    actions.push({ icon: 'refresh', ...a.retry, run: () => post({ type: 'rerun', id: m.id, stronger: false }), primary: true });
+    // Mirrors the host: discussions stay with their author, other work goes to a colleague with quota left.
+    const elsewhere = handOver && m.kind !== 'brainstorm' && m.kind !== 'debate' && m.kind !== 'fix';
+    const retry = elsewhere ? a.retryElsewhere(AGENT_LABELS[m.agent!]) : a.retry;
+    actions.push({ icon: elsewhere ? 'arrow-swap' : 'refresh', ...retry, run: () => post({ type: 'rerun', id: m.id, stronger: false }), primary: true });
   }
   if (m.status === 'done') {
     if (m.kind === 'review') {
