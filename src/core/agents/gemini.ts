@@ -1,12 +1,22 @@
+import { statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { t } from '../../i18n';
 import { prompts } from '../prompts';
 import type { AgentAdapter, AgentEvent, AgentLimits, AgentStatus, LimitWindow, RunOutcome, RunRequest, Usage } from '../types';
-import { type Logger, nullLogger, resolveBinary, runJsonl, runText, truncate, tryParseJson } from '../proc';
+import { type JsonlRun, type Logger, nullLogger, resolveBinary, runJsonl, runText, truncate, tryParseJson } from '../proc';
 import { shortPath } from './claude';
 
 /** Linux caps a single argv string at 128 KiB, and `agy -p` only takes the prompt as an argument. */
 const MAX_PROMPT_BYTES = 120_000;
 const EFFORT_IN_SLUG = /-(low|medium|high)$/;
+/**
+ * Broken model output (an empty function call, an empty reply). agy's agent loop answers it with
+ * "please retry", but print mode ends the run on that step (agy 1.4.10), so we resume the conversation ourselves.
+ */
+const MODEL_GLITCH = /improperly formatted function call|malformed function call|model output must contain either output text or tool calls/i;
+const GLITCH_RETRIES = 2;
+const MAX_EXTRA_DIRS = 16;
 
 /**
  * Drives the official Antigravity CLI: `agy -p <prompt> --output-format stream-json`.
@@ -14,6 +24,8 @@ const EFFORT_IN_SLUG = /-(low|medium|high)$/;
  */
 export class GeminiAdapter implements AgentAdapter {
   readonly id = 'gemini' as const;
+  /** Folders outside the workspace that a conversation's prompts named: later turns may go back to them. */
+  private readonly extraDirs = new Map<string, string[]>();
 
   constructor(
     private readonly binary: () => string,
@@ -37,41 +49,47 @@ export class GeminiAdapter implements AgentAdapter {
     const brief = !req.sessionId && req.systemPrompt ? `${req.systemPrompt}\n\n---\n\n` : '';
     // Read-only = plan mode without auto-approval: shell commands are denied (--sandbox does not stop
     // `echo > file` in the workspace). Plan mode also nudges the agent towards plan artifacts, hence the hint.
-    const full = brief + req.prompt + (autonomy === 'readonly' ? prompts().readonlyGemini : '');
-    const args = ['-p', fitPrompt(full), '--output-format', 'stream-json'];
-    if (req.model) args.push('--model', req.model);
+    const hint = autonomy === 'readonly' ? prompts().readonlyGemini : '';
+    const flags = ['--output-format', 'stream-json'];
+    if (req.model) flags.push('--model', req.model);
     // Antigravity model slugs carry the effort ("gemini-4-argon-high"); only pass --effort for bare slugs.
-    if (req.effort && !(req.model && EFFORT_IN_SLUG.test(req.model))) args.push('--effort', req.effort);
-    if (req.sessionId) args.push('--conversation', req.sessionId);
-    if (req.jsonSchema) args.push('--json-schema', JSON.stringify(req.jsonSchema));
+    if (req.effort && !(req.model && EFFORT_IN_SLUG.test(req.model))) flags.push('--effort', req.effort);
+    if (req.jsonSchema) flags.push('--json-schema', JSON.stringify(req.jsonSchema));
 
     // Print mode can't ask for permission: anything that would prompt is denied.
     // `--mode plan` is silently ignored together with --disable-slash-commands, so that flag is
     // only used when plan mode isn't needed (our prompts never start with "/" anyway).
-    if (autonomy === 'readonly') args.push('--mode', 'plan');
-    else if (autonomy === 'auto') args.push('--dangerously-skip-permissions', '--sandbox', '--disable-slash-commands');
-    else args.push('--dangerously-skip-permissions', '--disable-slash-commands');
+    if (autonomy === 'readonly') flags.push('--mode', 'plan');
+    else if (autonomy === 'auto') flags.push('--dangerously-skip-permissions', '--sandbox', '--disable-slash-commands');
+    else flags.push('--dangerously-skip-permissions', '--disable-slash-commands');
+    // Plan mode denies reading files outside the workspace ("~/Downloads/prototype.html" from the CEO).
+    // The other modes approve everything anyway, and there --add-dir would widen the sandbox for writes.
+    const dirs = outermost([...((req.sessionId && this.extraDirs.get(req.sessionId)) || []), ...outsideDirs(req.prompt, req.cwd)]);
+    if (autonomy === 'readonly') for (const d of dirs) flags.push('--add-dir', d);
 
     const s = new GeminiStream(req.cwd, onEvent, !!req.sessionId);
-    const res = await runJsonl(path, args, { cwd: req.cwd, signal, log: this.log }, (line) => s.handle(tryParseJson(line)));
+    const once = (prompt: string, conversation?: string) => {
+      s.result = undefined;
+      const args = ['-p', fitPrompt(prompt), ...flags, ...(conversation ? ['--conversation', conversation] : [])];
+      return runJsonl(path, args, { cwd: req.cwd, signal, log: this.log }, (line) => s.handle(tryParseJson(line)));
+    };
+    let res = await once(brief + req.prompt + hint, req.sessionId);
+    // Text, tools and tokens of every attempt add up to one reply.
+    for (let retry = 1; retry <= GLITCH_RETRIES && !res.aborted && s.conversationId && !succeeded(s) && MODEL_GLITCH.test(failure(s, res)); retry++) {
+      this.log.info(`agy: broken model output, resuming ${s.conversationId} (${retry}/${GLITCH_RETRIES})`);
+      res = await once(prompts().glitchGemini + hint, s.conversationId);
+    }
     const sessionId = s.conversationId ?? req.sessionId;
+    if (sessionId && dirs.length) this.extraDirs.set(sessionId, dirs);
     if (res.aborted) return { ok: false, text: s.text, sessionId, error: t().cli.stopped };
 
     const r = s.result;
     const response = typeof r?.response === 'string' ? r.response.trim() : '';
     const text = s.text.trim() || response;
-    if (r?.status === 'SUCCESS' && text) {
+    if (succeeded(s)) {
       return { ok: true, text, sessionId, structured: r.structured_output ?? (req.jsonSchema ? tryParseJson(response) : undefined), usage: s.usage };
     }
-    const denied: string[] = (r?.denied_actions ?? []).map((d: any) => d.display_name ?? d.action).filter(Boolean);
-    const stderr = res.stderr.trim().split('\n').filter((l) => l.trim()).slice(-2).join('\n');
-    const reported = typeof r?.error === 'string' ? r.error : r?.error?.message;
-    const error =
-      reported ||
-      (denied.length ? t().cli.denied(denied.join(', ')) : '') ||
-      stderr ||
-      (r ? `agy: ${r.status ?? t().cli.emptyReply}` : t().cli.exited('agy', res.code));
-    return { ok: false, text, sessionId, usage: s.usage, error };
+    return { ok: false, text, sessionId, usage: s.usage, error: failure(s, res) };
   }
 
   /** `/usage` is answered locally in print mode, without a model call. */
@@ -87,6 +105,45 @@ export class GeminiAdapter implements AgentAdapter {
     if (!path) return [];
     return parseAgyModels(await runText(path, ['models'], 30_000));
   }
+}
+
+/**
+ * Folders of the existing files and folders outside the workspace that a prompt names by absolute path,
+ * "~/…" or a file:/// link. Prompts carry colleagues' messages too, with `ls /` output and the like.
+ */
+export function outsideDirs(text: string, cwd: string): string[] {
+  const dirs: string[] = [];
+  for (const m of text.matchAll(/(?<![\w.:/~-])(?:file:\/\/)?(~?\/[^\s"'`<>()[\]{}|*]+)/g)) {
+    const raw = m[1].replace(/[.,;:!?]+$/, '');
+    const path = resolve(raw.startsWith('~') ? join(homedir(), raw.slice(1)) : raw);
+    if (isInside(path, cwd)) continue;
+    try {
+      const dir = statSync(path).isDirectory() ? path : dirname(path);
+      if (!tooBroad(dir)) dirs.push(dir);
+    } catch {
+      /* not a path, or gone */
+    }
+  }
+  return outermost(dirs);
+}
+
+/** "/etc", the home folder and its parents, dot-folders in it (~/.ssh, ~/.config), system trees. */
+function tooBroad(dir: string): boolean {
+  const home = homedir();
+  if (dir.split('/').filter(Boolean).length < 2 || isInside(home, dir)) return true;
+  if (isInside(dir, home) && relative(home, dir).startsWith('.')) return true;
+  return ['/dev', '/proc', '/sys', '/run'].some((d) => isInside(dir, d));
+}
+
+/** Each folder once, without those inside another listed one; the latest mentions win the cap. */
+function outermost(dirs: string[]): string[] {
+  const unique = [...new Set(dirs)];
+  return unique.filter((d) => !unique.some((o) => o !== d && isInside(d, o))).slice(-MAX_EXTRA_DIRS);
+}
+
+function isInside(path: string, dir: string): boolean {
+  const rel = relative(dir, path);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
 export function parseAgyModels(out: string): string[] {
@@ -175,6 +232,24 @@ class GeminiStream {
       if (b.state && b.state !== 'ACTIVE') this.emit({ kind: 'tool_done', id, ok: b.state === 'DONE' });
     }
   }
+}
+
+function succeeded(s: GeminiStream): boolean {
+  const response = typeof s.result?.response === 'string' ? s.result.response.trim() : '';
+  return s.result?.status === 'SUCCESS' && !!(s.text.trim() || response);
+}
+
+function failure(s: GeminiStream, res: JsonlRun): string {
+  const r = s.result;
+  const denied: string[] = (r?.denied_actions ?? []).map((d: any) => d.display_name ?? d.action).filter(Boolean);
+  const stderr = res.stderr.trim().split('\n').filter((l) => l.trim()).slice(-2).join('\n');
+  const reported = typeof r?.error === 'string' ? r.error : r?.error?.message;
+  return (
+    reported ||
+    (denied.length ? t().cli.denied(denied.join(', ')) : '') ||
+    stderr ||
+    (r ? `agy: ${r.status ?? t().cli.emptyReply}` : t().cli.exited('agy', res.code))
+  );
 }
 
 function toUsage(u: any): Usage {

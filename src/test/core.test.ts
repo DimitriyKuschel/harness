@@ -1,16 +1,18 @@
 import assert from 'node:assert/strict';
-import { tmpdir } from 'node:os';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { fakeCli, fakeReplyCli } from './helpers';
+import { fakeCli, fakeCliSeq, fakeReplyCli } from './helpers';
 import { ClaudeAdapter, parseClaudeLimits, parseClaudeUsage } from '../core/agents/claude';
 import { CodexAdapter, parseCodexModels, parseCodexRateLimits } from '../core/agents/codex';
-import { GeminiAdapter, parseAgyModels } from '../core/agents/gemini';
+import { GeminiAdapter, outsideDirs, parseAgyModels } from '../core/agents/gemini';
 import { resolveLocale, setLocale } from '../i18n';
 import { discussionTier, handoffMentions, parseMentions, teamBrief } from '../core/orchestrator';
 import { parsePlan, parseStatus, stripPlanBlock } from '../core/plan';
 import { exhaustedUntil, quotaError } from '../core/quota';
 import { Router, effectiveUsage, heuristicAssessment, isSmallTalk, quotaPenalty, shiftTier, type RouteContext, type RouterConfig } from '../core/router';
-import type { AgentEvent, AgentId, AgentLimits } from '../core/types';
+import type { AgentEvent, AgentId, AgentLimits, Autonomy } from '../core/types';
 
 const pkg = require('../../package.json');
 const props = pkg.contributes.configuration.properties;
@@ -323,4 +325,45 @@ test('gemini (agy) adapter: a resumed conversation reports this run\'s tokens, n
   assert.equal(failed.ok, false);
   assert.match(failed.error ?? '', /^Individual quota reached/);
   assert.deepEqual(failed.usage, { input: 120000, output: 1200, cached: 0 });
+});
+
+test('gemini (agy) adapter: a malformed function call resumes the conversation instead of failing the run', async () => {
+  const runs: string[] = [];
+  const log = { info: (m: string) => m.startsWith('$ ') && runs.push(m), error: () => {} };
+  const run = (bin: string) => new GeminiAdapter(() => bin, log).run({ prompt: 'x', cwd: '/data/harness', autonomy: 'readonly' }, () => {}, new AbortController().signal);
+
+  const out = await run(fakeCliSeq(['gemini-malformed.jsonl', 'gemini-resumed.jsonl']));
+  assert.ok(out.ok, out.error);
+  assert.equal(out.text, 'OK2');
+  assert.deepEqual(out.usage, { input: 30126 + 8672, output: 331 + 2, cached: 0 }, 'both attempts are one reply');
+  assert.equal(runs.length, 2);
+  assert.match(runs[1], /--conversation f11ee94a-190a-45c1-9436-ca8bca53ae17/);
+  assert.match(runs[1], /--mode plan/, 'the retry keeps the read-only flags');
+
+  runs.length = 0;
+  const stuck = await run(fakeCliSeq(['gemini-malformed.jsonl']));
+  assert.equal(stuck.ok, false);
+  assert.match(stuck.error ?? '', /Malformed function call/);
+  assert.equal(runs.length, 3, 'two retries, then the error goes to the chat');
+});
+
+test('gemini (agy) adapter: read-only runs may read the files outside the workspace that the prompt names', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'harness-dirs-'));
+  const [ws, out, docs] = ['ws', 'Downloads', 'docs'].map((d) => join(root, d));
+  for (const d of [join(ws, 'src'), out, join(docs, 'sub')]) mkdirSync(d, { recursive: true });
+  writeFileSync(join(out, 'прототип.html'), '');
+  const prompt = `Изучи ${out}/прототип.html, ${docs}/sub и папку file://${docs}. и ${ws}/src; ~300 строк, src/a.ts, https://example.com/x, ${root}/missing.md`;
+  assert.deepEqual(outsideDirs(prompt, ws), [out, docs]);
+  assert.deepEqual(outsideDirs(`${homedir()}/ и ~/. и /. и ${dirname(homedir())} и /etc/ и /proc/self`, ws), [], 'home, its parents, top-level and system folders are too broad');
+
+  const runs: string[] = [];
+  const log = { info: (m: string) => m.startsWith('$ ') && runs.push(m), error: () => {} };
+  const gemini = new GeminiAdapter(() => fakeCli('gemini-stream.jsonl'), log);
+  const run = (p: string, autonomy: Autonomy, sessionId?: string) => gemini.run({ prompt: p, cwd: ws, autonomy, sessionId }, () => {}, new AbortController().signal);
+  const first = await run(prompt, 'readonly');
+  assert.match(runs[0], new RegExp(`--add-dir ${out} --add-dir ${docs}`));
+  await run('а теперь сравни со скриншотами', 'readonly', first.sessionId);
+  assert.match(runs[1], new RegExp(`--add-dir ${out}`), 'the conversation remembers the folders');
+  await run(prompt, 'auto');
+  assert.doesNotMatch(runs[2], /--add-dir/, 'the sandbox stays as it is');
 });

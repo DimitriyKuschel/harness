@@ -215,6 +215,9 @@ export const en = {
   readonlyGemini:
     "\n\n(Read-only mode: shell commands are not allowed, so explore the project with the file viewing, folder listing and search tools. Answer right here, as text in the chat; don't create plans, artifacts or files.)",
 
+  glitchGemini:
+    "Your previous response was malformed (an empty tool call or an empty reply), so the run stopped. Carry on with the task from where you left off; don't redo finished steps.",
+
   contextCut: '…[start of the context cut off]',
 };
 
